@@ -30,25 +30,28 @@ func main() {
 	var opts Options
 	_, err := flags.Parse(&opts)
 	if err != nil {
-		fmt.Println(err)
+		// Exit successfully when printing the help menu, but with a failure code otherwise
+		if flagsErr, ok := err.(*flags.Error); ok && flagsErr.Type == flags.ErrHelp {
+			os.Exit(0)
+		}
 		os.Exit(1)
 	}
 
 	// Validate flag values
 
-	taskName := opts.Task
+	taskName := strings.TrimSpace(opts.Task)
 	if !slices.Contains([]string{"statistics", "analyze"}, taskName) {
 		fmt.Printf("Invalid task %q. Must be one of: `statistics`, `analyze`\n", taskName)
 		os.Exit(1)
 	}
 
-	projectDir := opts.ProjectDir
+	projectDir := strings.Trim(opts.ProjectDir, "\t\n\v\f\r \"") // Trim whitespace and quotes
 	if projectDir == "" {
-		fmt.Printf("You must provide a path to a Go project (e.g., ./myproject)!")
+		fmt.Printf("You must provide a path to a Go project (e.g., ./myproject)!\n")
 		os.Exit(1)
 	}
 
-	logLevel := strings.ToLower(opts.LogLevel)
+	logLevel := strings.ToLower(strings.TrimSpace(opts.LogLevel))
 	if !slices.Contains([]string{"debug", "info", "warn", "error"}, logLevel) {
 		fmt.Printf("Invalid logLevel %q. Must be one of: 'debug', 'info', 'warn', 'error'\n", logLevel)
 		os.Exit(1)

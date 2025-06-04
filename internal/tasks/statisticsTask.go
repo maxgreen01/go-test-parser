@@ -4,10 +4,18 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"strings"
+
+	"github.com/maxgreen01/golang-test-parser/internal/testcase"
 )
 
 type StatisticsTask struct {
-	FuncCount int
+	TestCases []testcase.TestCase // list of actual test functions and related metadata
+
+	TestFileCount  int // total number of files ending in "_test.go"
+	TotalFileCount int // total number of Go files
+	TotalTestLines int // total number of lines in all test functions
+	TotalLines     int // total number of lines across the entire project
 }
 
 func (s *StatisticsTask) Name() string {
@@ -15,31 +23,54 @@ func (s *StatisticsTask) Name() string {
 }
 
 func (s *StatisticsTask) Visit(fset *token.FileSet, file *ast.File) {
-	ast.Inspect(file, func(n ast.Node) bool {
-		if _, ok := n.(*ast.FuncDecl); ok {
-			s.FuncCount++
+	packageName := file.Name.Name
+	fileName := fset.Position(file.Pos()).Filename
+
+	// increment project-scale statistics
+	s.TotalFileCount++
+	if strings.HasSuffix(fileName, "_test.go") {
+		s.TestFileCount++
+	}
+	s.TotalLines += fset.Position(file.End()).Line - fset.Position(file.Pos()).Line + 1
+
+	// Only iterate top level declarations
+	// todo make sure this has same expected output as with `ast.Inspect`
+	// for _, decl := range file.Decls {
+	ast.Inspect(file, func(node ast.Node) bool {
+		fn, ok := node.(*ast.FuncDecl)
+		if !ok {
+			return true
+		}
+
+		// slog.Debug("checking function", "name", fn.Name.Name, "package", packageName, "file", fileName)
+
+		// Save the function as a valid test case if it meets all the criteria
+		if valid, _ := testcase.IsValidTestCase(fn); valid {
+			tc := testcase.CreateTestCase(fn, fset, packageName)
+			s.TestCases = append(s.TestCases, tc)
+
+			lines := tc.NumLines()
+			s.TotalTestLines += lines
 		}
 		return true
 	})
-
-	// filename := fset.Position(file.Pos()).Filename
-	// if !strings.HasSuffix(filename, "_test.go") {
-	// 	return; // Skip non-test files
-	// }
-	// ast.Inspect(file, func(n ast.Node) bool {
-	// 	if fn, ok := n.(*ast.FuncDecl); ok && strings.HasPrefix(fn.Name.Name, "Test") {
-	// 		fmt.Printf("Found test: %s in %s\n", fn.Name.Name, filename)
-	// 	}
-	// 	return true
-	// })
 }
 
 func (s *StatisticsTask) ReportResults() error {
-	fmt.Println("\nStatistics Report:")
-	if s.FuncCount == 0 {
-		fmt.Println("No functions found in the provided Go files.")
+	fmt.Println("\n====================  Statistics Report:  ====================\n")
+
+	numTests := len(s.TestCases)
+	if numTests == 0 {
+		fmt.Println("No test cases found in the provided Go files.")
 	} else {
-		fmt.Println("Total functions found:", s.FuncCount)
+		fmt.Printf("Total number of test cases: %d\n", numTests)
+		fmt.Printf("\n")
+		fmt.Printf("Number of '_test.go' files: %d\n", s.TestFileCount)
+		fmt.Printf("Total number of Go files: %d\n", s.TotalFileCount)
+		fmt.Printf("\n")
+		fmt.Printf("Total lines of test code: %d\n", s.TotalTestLines)
+		fmt.Printf("Average lines per test case: %.1f\n", float64(s.TotalTestLines)/float64(numTests))
+		fmt.Printf("Percentage of total lines for test cases: %.1f%%\n", float64(s.TotalTestLines)/float64(s.TotalLines)*100)
 	}
 	return nil
 }
