@@ -100,7 +100,7 @@ func IsValidTestCase(funcDecl *ast.FuncDecl) (valid bool, badFormat bool) {
 		return false, false
 	}
 
-	slog.Info("Found valid test case:", "name", name)
+	slog.Debug("Found valid test case:", "name", name)
 
 	return true, badFormat
 }

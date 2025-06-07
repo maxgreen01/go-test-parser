@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"log/slog"
 	"strings"
 
 	"github.com/maxgreen01/golang-test-parser/internal/testcase"
@@ -34,15 +35,13 @@ func (s *StatisticsTask) Visit(fset *token.FileSet, file *ast.File) {
 	s.TotalLines += fset.Position(file.End()).Line - fset.Position(file.Pos()).Line + 1
 
 	// Only iterate top level declarations
-	// todo make sure this has same expected output as with `ast.Inspect`
-	// for _, decl := range file.Decls {
-	ast.Inspect(file, func(node ast.Node) bool {
-		fn, ok := node.(*ast.FuncDecl)
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
 		if !ok {
-			return true
+			continue
 		}
 
-		// slog.Debug("checking function", "name", fn.Name.Name, "package", packageName, "file", fileName)
+		slog.Debug("Checking function...", "name", fn.Name.Name, "package", packageName, "file", fileName)
 
 		// Save the function as a valid test case if it meets all the criteria
 		if valid, _ := testcase.IsValidTestCase(fn); valid {
@@ -52,12 +51,11 @@ func (s *StatisticsTask) Visit(fset *token.FileSet, file *ast.File) {
 			lines := tc.NumLines()
 			s.TotalTestLines += lines
 		}
-		return true
-	})
+	}
 }
 
 func (s *StatisticsTask) ReportResults() error {
-	fmt.Println("\n====================  Statistics Report:  ====================\n")
+	fmt.Println("\n=================  Statistics Report:  =================\n")
 
 	numTests := len(s.TestCases)
 	if numTests == 0 {

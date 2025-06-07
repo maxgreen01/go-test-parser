@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maxgreen01/golang-test-parser/internal/tasks"
 	"github.com/maxgreen01/golang-test-parser/pkg/parser"
 
 	"github.com/jessevdk/go-flags"
@@ -21,17 +20,19 @@ func main() {
 	//
 	// =========== define and parse command-line flags ===========
 	//
-	type Options struct {
+	var opts struct {
+		// Application Options
 		Task       string `long:"task" short:"t" description:"Task to perform: 'statistics' or 'analyze'"`
 		ProjectDir string `long:"project" short:"p" description:"Path to the Go project directory to be parsed"`
+		SplitByDir bool   `long:"splitByDir" description:"Whether to parse each top-level directory separately (and ignore top-level Go files)"`
 		LogLevel   string `long:"logLevel" short:"l" description:"Log level: 'debug', 'info', 'warn', 'error'" default:"info"`
+		Timer      bool   `long:"timer" description:"Whether to print the total execution time of the specified task"`
 	}
 
-	var opts Options
-	_, err := flags.Parse(&opts)
+	_, err := flags.NewParser(&opts, flags.Default|flags.AllowBoolValues).Parse()
 	if err != nil {
 		// Exit successfully when printing the help menu, but with a failure code otherwise
-		if flagsErr, ok := err.(*flags.Error); ok && flagsErr.Type == flags.ErrHelp {
+		if flags.WroteHelp(err) {
 			os.Exit(0)
 		}
 		os.Exit(1)
@@ -56,6 +57,10 @@ func main() {
 		fmt.Printf("Invalid logLevel %q. Must be one of: 'debug', 'info', 'warn', 'error'\n", logLevel)
 		os.Exit(1)
 	}
+
+	splitByDir := opts.SplitByDir
+	timer := opts.Timer
+	// no validation needed for boolean options
 
 	// Map string flag to slog.Level
 	var level slog.Level
@@ -92,20 +97,23 @@ func main() {
 	//
 	// ===========  start the parser with the selected task ===========
 	//
-	slog.Info("Starting the parser with parameters:", "task", taskName, "project", projectDir, "logLevel", logLevel)
+	fmt.Println()
+	slog.Info("Starting the parser with parameters:", "task", taskName, "project", projectDir, "splitByDir", splitByDir, "logLevel", logLevel)
 
-	var task parser.Task
-	switch taskName {
-	case "statistics":
-		task = &tasks.StatisticsTask{}
-	case "analyze":
-		task = &tasks.AnalyzeTask{}
+	if timer {
+		startTime := time.Now()
+		defer func() {
+			slog.Info("Total execution time:", "duration", time.Since(startTime))
+		}()
 	}
 
 	// Actually run the parser
-	if err := parser.Parse(projectDir, task); err != nil {
-		slog.Error("Error parsing project", "err", err, "project", projectDir, "task", taskName)
+	if err := parser.Parse(projectDir, taskName, splitByDir); err != nil {
+		slog.Error("Error parsing project", "err", err, "task", taskName, "project", projectDir)
 		os.Exit(1)
 	}
+
+	fmt.Println()
+	slog.Info("Finished running the parser!", "task", taskName, "project", projectDir)
 	fmt.Println()
 }
