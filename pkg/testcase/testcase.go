@@ -1,3 +1,4 @@
+// Provides functionality for analyzing and storing test cases extracted from Go source files.
 package testcase
 
 import (

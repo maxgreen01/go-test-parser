@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/maxgreen01/golang-test-parser/internal/tasks"
-
 	"golang.org/x/tools/go/packages"
 )
 
@@ -20,35 +18,31 @@ import (
 // This includes a method to visit each source file, and another to report results after all files have been processed.
 // Implementations should include fields (either public or private) to track progress, results, etc. across the entire project.
 type Task interface {
+	// Return the lowercase name of the task
 	Name() string
-	Visit(fset *token.FileSet, file *ast.File)
-	ReportResults() error
-}
 
-// TaskFactory returns a new Task based on the provided name, or an error if the Task does not exist.
-func TaskFactory(taskName string) (Task, error) {
-	switch taskName {
-	case "statistics":
-		return &tasks.StatisticsTask{}, nil
-	case "analyze":
-		return &tasks.AnalyzeTask{}, nil
-	default:
-		return nil, errors.New("invalid task name")
-	}
+	// Function called on every Go source file in the project, which may modify local state to save results
+	Visit(fset *token.FileSet, file *ast.File)
+
+	// Function called after all files have been processed
+	ReportResults() error
+
+	// Create a new instance of the Task with the same initial state and flags.
+	// Used to ensure that each parsing run has a distinct output.
+	Clone() Task
 }
 
 // Runs the specified task on all Go source files in the given directory.
 // If `splitByDir` is true, parses each top-level directory in the specified directory separately (ignoring top-level Go files).
-func Parse(rootDir string, taskName string, splitByDir bool) error {
+func Parse(t Task, rootDir string, splitByDir bool) error {
 	if rootDir == "" {
-		return errors.New("empty root directory")
+		return errors.New("empty root directory provided")
 	}
-	// ensure the task is valid
-	if _, err := TaskFactory(taskName); err != nil {
-		return err
+	if t == nil {
+		return errors.New("nil task provided")
 	}
 
-	fmt.Printf("\n============ Running %q task on directory %q ============\n", taskName, rootDir)
+	fmt.Printf("\n============ Running %q task on directory %q ============\n", t.Name(), rootDir)
 
 	// Run the parser either on the entire directory at once, or on each top-level sub-directory separately
 	if splitByDir {
@@ -62,14 +56,14 @@ func Parse(rootDir string, taskName string, splitByDir bool) error {
 		for _, entry := range entries {
 			if entry.IsDir() {
 				subDir := filepath.Join(rootDir, entry.Name())
-				if err := parseDir(subDir, taskName); err != nil {
+				if err := parseDir(subDir, t); err != nil {
 					return errors.New("Parsing subdirectory " + subDir + ": " + err.Error())
 				}
 			}
 		}
 	} else {
 		// Parse the entire directory as a single unit
-		if err := parseDir(rootDir, taskName); err != nil {
+		if err := parseDir(rootDir, t); err != nil {
 			return err
 		}
 	}
@@ -80,12 +74,9 @@ func Parse(rootDir string, taskName string, splitByDir bool) error {
 
 // Iterates over all Go source files in the specified directory and runs the provided task on each file.
 // After processing all files, calls the task's ReportResults method to output any accumulated results.
-func parseDir(dir string, taskName string) error {
-	// Create a new Task instance
-	task, err := TaskFactory(taskName)
-	if err != nil {
-		return err
-	}
+func parseDir(dir string, task Task) error {
+	// Create a new Task instance so each parsing run has a distinct output
+	task = task.Clone()
 
 	fmt.Printf("\n\n~~~~~ Parsing directory %q ~~~~~\n", dir)
 
@@ -142,6 +133,7 @@ func parseDir(dir string, taskName string) error {
 			// Actually process the file
 			slog.Debug("Processing file", "package", pkg.Name, "file", filePath)
 			task.Visit(fset, file)
+			// TODO move error handling here instead of inside Visit
 		}
 	}
 
