@@ -15,7 +15,7 @@ import (
 // Stores input flags for the task, as well as fields representing the data to be collected.
 type AnalyzeCommand struct {
 	// Input flags
-	*config.GlobalOptions
+	globals *config.GlobalOptions // Avoid embedding because it flag parser treats this as duplicating the global options
 	analyzeOptions
 
 	// Output fields
@@ -36,24 +36,26 @@ func (a *AnalyzeCommand) Name() string {
 
 // Create a new instance of the AnalyzeCommand using a reference to the global options.
 func NewAnalyzeCommand(globals *config.GlobalOptions) *AnalyzeCommand {
-	if globals.OutputPath == "" {
-		globals.OutputPath = "analyze_report.csv"
-	}
-
-	return &AnalyzeCommand{GlobalOptions: globals}
+	return &AnalyzeCommand{globals: globals}
 }
 
-// Create a new instance of the AnalyzeCommand with the same initial state.
-func (cmd *AnalyzeCommand) Clone() parser.Task {
+// Create a new instance of the AnalyzeCommand with the same initial state (except the specified project directory).
+func (cmd *AnalyzeCommand) Clone(dir string) parser.Task {
+	globals := *cmd.globals
+	globals.ProjectDir = dir
 	return &AnalyzeCommand{
-		GlobalOptions:  cmd.GlobalOptions,
+		globals:        &globals,
 		analyzeOptions: cmd.analyzeOptions,
 	}
 }
 
 // Validate the values of this Command's flags, then run the task itself
 func (cmd *AnalyzeCommand) Execute(args []string) error {
-	return parser.Parse(cmd, cmd.ProjectDir, cmd.SplitByDir)
+	if cmd.globals.OutputPath == "" {
+		cmd.globals.OutputPath = "analyze_report.csv"
+	}
+
+	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir)
 }
 
 func (a *AnalyzeCommand) Visit(fset *token.FileSet, file *ast.File) {

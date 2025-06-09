@@ -8,17 +8,19 @@ import (
 	"strings"
 
 	"github.com/maxgreen01/golang-test-parser/internal/config"
+	output "github.com/maxgreen01/golang-test-parser/internal/outputwriter"
 	"github.com/maxgreen01/golang-test-parser/pkg/parser"
 	"github.com/maxgreen01/golang-test-parser/pkg/testcase"
 
 	"github.com/jessevdk/go-flags"
 )
 
+// todo maybe make a custom interface for representing this combination
 // Implementation of both the Parser Task interface and the Flags package's Commander interface.
 // Stores input flags for the task, as well as fields representing the data to be collected.
 type StatisticsCommand struct {
 	// Input flags
-	*config.GlobalOptions
+	globals *config.GlobalOptions // Avoid embedding because it flag parser treats this as duplicating the global options
 	statisticsOptions
 
 	// Output fields
@@ -44,24 +46,27 @@ func (s *StatisticsCommand) Name() string {
 
 // Create a new instance of the StatisticsCommand using a reference to the global options.
 func NewStatisticsCommand(globals *config.GlobalOptions) *StatisticsCommand {
-	if globals.OutputPath == "" {
-		globals.OutputPath = "statistics_report.csv"
-	}
-
-	return &StatisticsCommand{GlobalOptions: globals}
+	return &StatisticsCommand{globals: globals}
 }
 
-// Create a new instance of the StatisticsCommand with the same initial state.
-func (cmd *StatisticsCommand) Clone() parser.Task {
+// Create a new instance of the StatisticsCommand with the same initial state (except the specified project directory).
+func (cmd *StatisticsCommand) Clone(dir string) parser.Task {
+	globals := *cmd.globals
+	globals.ProjectDir = dir
 	return &StatisticsCommand{
-		GlobalOptions:     cmd.GlobalOptions,
+		globals:           &globals,
 		statisticsOptions: cmd.statisticsOptions,
 	}
 }
 
 // Validate the values of this Command's flags, then run the task itself
 func (cmd *StatisticsCommand) Execute(args []string) error {
-	return parser.Parse(cmd, cmd.ProjectDir, cmd.SplitByDir)
+	if cmd.globals.OutputPath == "" {
+		cmd.globals.OutputPath = "statistics_report.csv"
+	}
+
+	// todo maybe update the Task interface to include a method for getting flags (to avoid passing so many boilerplate params)
+	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir)
 }
 
 func (s *StatisticsCommand) Visit(fset *token.FileSet, file *ast.File) {
@@ -96,23 +101,71 @@ func (s *StatisticsCommand) Visit(fset *token.FileSet, file *ast.File) {
 }
 
 func (s *StatisticsCommand) ReportResults() error {
-	fmt.Println("\n=================  Statistics Report:  =================\n")
+	// Format output for printing the report to the terminal (and potentially writing to a text file)
 
-	numTests := len(s.testCases)
-	if numTests == 0 {
-		fmt.Println("No test cases found in the provided Go files.")
-	} else {
-		fmt.Printf("Total number of test cases: %d\n", numTests)
-		fmt.Printf("\n")
-		fmt.Printf("Number of '_test.go' files: %d\n", s.testFileCount)
-		fmt.Printf("Total number of Go files: %d\n", s.totalFileCount)
-		fmt.Printf("\n")
-		fmt.Printf("Total lines of test code: %d\n", s.totalTestLines)
-		fmt.Printf("Average lines per test case: %.1f\n", float64(s.totalTestLines)/float64(numTests))
-		fmt.Printf("Percentage of total lines for test cases: %.1f%%\n", float64(s.totalTestLines)/float64(s.totalLines)*100)
+	reportLines := []string{
+		fmt.Sprintf("\n=============  Statistics Report for %q:  =============\n\n", s.globals.ProjectDir),
 	}
 
-	// todo append results to output file
+	// Define additional result statistics
+	numTests := len(s.testCases)
+	avgTestLines := 0.0
+	percentTestLines := 0.0
 
-	return nil
+	if numTests == 0 {
+		reportLines = append(reportLines, "No test cases found in the specified project.\n")
+	} else {
+		// Calculate additional result statistics
+		avgTestLines = float64(s.totalTestLines) / float64(numTests)
+		percentTestLines = float64(s.totalTestLines) / float64(s.totalLines) * 100
+
+		reportLines = append(reportLines,
+			fmt.Sprintf("Total number of test cases: %d\n", numTests),
+			"\n",
+			fmt.Sprintf("Number of '_test.go' files: %d\n", s.testFileCount),
+			fmt.Sprintf("Total number of Go files: %d\n", s.totalFileCount),
+			"\n",
+			fmt.Sprintf("Total lines of test code: %d\n", s.totalTestLines),
+			fmt.Sprintf("Average lines per test case: %.1f\n", avgTestLines),
+			fmt.Sprintf("Percentage of total lines for test cases: %.1f%%\n", percentTestLines),
+			"\n",
+		)
+	}
+
+	// Print the report to the terminal
+	slog.Info("Finished parsing project \"" + s.globals.ProjectDir + "\"")
+	fmt.Print(strings.Join(reportLines, ""))
+
+	// Append results to output file (text or CSV)
+	switch output.DetectFormat(s.globals.OutputPath) {
+
+	case output.FormatText:
+		return output.WriteOutput(s.globals.OutputPath, reportLines, nil)
+
+	case output.FormatCSV:
+		csvHeaders := []string{
+			"ProjectDir",
+			"TestCases",
+			"TestFiles",
+			"TotalFiles",
+			"TestLines",
+			"AvgLinesPerTest",
+			"PercentTestLines",
+		}
+
+		row := []string{
+			s.globals.ProjectDir,
+			fmt.Sprintf("%d", numTests),
+			fmt.Sprintf("%d", s.testFileCount),
+			fmt.Sprintf("%d", s.totalFileCount),
+			fmt.Sprintf("%d", s.totalTestLines),
+			fmt.Sprintf("%.1f", avgTestLines),
+			fmt.Sprintf("%.1f", percentTestLines),
+		}
+
+		return output.WriteOutput(s.globals.OutputPath, row, csvHeaders)
+
+	default:
+		return fmt.Errorf("unsupported output format (file %q)", s.globals.OutputPath)
+	}
 }

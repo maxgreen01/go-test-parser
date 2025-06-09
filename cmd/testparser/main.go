@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"slices"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,7 +39,7 @@ func main() {
 		}
 
 		// Validate and apply global flags
-		applyGlobals(opts)
+		applyGlobals(&opts)
 
 		task, ok := command.(parser.Task)
 		if !ok {
@@ -81,7 +81,7 @@ func main() {
 }
 
 // Validate (in-place) and apply global flags such as logging level and color output
-func applyGlobals(opts GlobalOptions) {
+func applyGlobals(opts *GlobalOptions) {
 	//
 	// =========== Validate flag values ===========
 	//
@@ -90,18 +90,32 @@ func applyGlobals(opts GlobalOptions) {
 		fmt.Printf("You must provide a path to a Go project (e.g., ./myproject)!\n")
 		os.Exit(1)
 	}
-
-	opts.LogLevel = strings.ToLower(strings.TrimSpace(opts.LogLevel))
-	if !slices.Contains([]string{"debug", "info", "warn", "error"}, opts.LogLevel) {
-		fmt.Printf("Invalid logLevel %q. Must be one of: 'debug', 'info', 'warn', 'error'\n", opts.LogLevel)
+	absPath, err := filepath.Abs(opts.ProjectDir)
+	if err != nil {
+		fmt.Printf("Error resolving absolute path to Go project %q: %v\n", opts.ProjectDir, err)
 		os.Exit(1)
 	}
+	// todo check what happens if the path is a file, especially with `splitByDir` -- maybe check stat.isDir
+	opts.ProjectDir = absPath
 
-	// todo validate output path
+	// Allowed options are handled by the `choice` tag in the struct definition
+	opts.LogLevel = strings.ToLower(strings.TrimSpace(opts.LogLevel))
+
+	opts.OutputPath = strings.Trim(opts.OutputPath, "\t\n\v\f\r \"") // Trim whitespace and quotes
+	if opts.OutputPath != "" {
+		absPath, err := filepath.Abs(opts.OutputPath)
+		if err != nil {
+			fmt.Printf("Error resolving absolute path for output file %q: %v\n", opts.OutputPath, err)
+			os.Exit(1)
+		}
+		opts.OutputPath = absPath
+	}
 
 	// Map string flag to slog.Level
 	var level slog.Level
 	switch opts.LogLevel {
+	case "info":
+		level = slog.LevelInfo
 	case "debug":
 		level = slog.LevelDebug
 	case "warn":
@@ -109,7 +123,9 @@ func applyGlobals(opts GlobalOptions) {
 	case "error":
 		level = slog.LevelError
 	default:
-		level = slog.LevelInfo
+		// Should never happen because `LogLevel` options should be validated already
+		fmt.Printf("Invalid logLevel %q", opts.LogLevel)
+		os.Exit(1)
 	}
 
 	//

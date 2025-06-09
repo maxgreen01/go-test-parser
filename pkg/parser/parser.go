@@ -27,9 +27,9 @@ type Task interface {
 	// Function called after all files have been processed
 	ReportResults() error
 
-	// Create a new instance of the Task with the same initial state and flags.
-	// Used to ensure that each parsing run has a distinct output.
-	Clone() Task
+	// Create a new instance of the Task with the same initial state and flags (except the specified project directory).
+	// Used to ensure that each parsed directory can have an independent output.
+	Clone(dir string) Task
 }
 
 // Runs the specified task on all Go source files in the given directory.
@@ -42,22 +42,25 @@ func Parse(t Task, rootDir string, splitByDir bool) error {
 		return errors.New("nil task provided")
 	}
 
-	fmt.Printf("\n============ Running %q task on directory %q ============\n", t.Name(), rootDir)
+	fmt.Println()
+	slog.Info("============ Running "+t.Name()+" task ============", "dir", rootDir)
+	fmt.Println()
 
 	// Run the parser either on the entire directory at once, or on each top-level sub-directory separately
 	if splitByDir {
 		// Parse each top-level directory separately
-		fmt.Printf("Parsing each top-level directory separately\n")
+		slog.Info("Parsing each top-level directory separately")
 
 		entries, err := os.ReadDir(rootDir)
 		if err != nil {
 			return err
 		}
+		// todo maybe make this concurrent? would need to look into `outputwriter` and `task.Clone` because they might not be thread-safe
 		for _, entry := range entries {
 			if entry.IsDir() {
 				subDir := filepath.Join(rootDir, entry.Name())
 				if err := parseDir(subDir, t); err != nil {
-					return errors.New("Parsing subdirectory " + subDir + ": " + err.Error())
+					return fmt.Errorf("parsing subdirectory %q: %w", subDir, err)
 				}
 			}
 		}
@@ -75,10 +78,12 @@ func Parse(t Task, rootDir string, splitByDir bool) error {
 // Iterates over all Go source files in the specified directory and runs the provided task on each file.
 // After processing all files, calls the task's ReportResults method to output any accumulated results.
 func parseDir(dir string, task Task) error {
-	// Create a new Task instance so each parsing run has a distinct output
-	task = task.Clone()
+	// Create a new Task instance (with updated project dir) so each parsing run has a distinct output
+	task = task.Clone(dir)
 
-	fmt.Printf("\n\n~~~~~ Parsing directory %q ~~~~~\n", dir)
+	fmt.Println()
+	fmt.Println()
+	slog.Info("~~~~~ Parsing directory \"" + dir + "\" ~~~~~")
 
 	fset := token.NewFileSet()
 	cfg := &packages.Config{
@@ -93,7 +98,12 @@ func parseDir(dir string, task Task) error {
 	pattern := strings.TrimRight(dir, "/\\") + "/..."
 	pkgs, err := packages.Load(cfg, pattern)
 	if err != nil {
-		slog.Error("Failed to load packages: ", "err", err)
+		return fmt.Errorf("failed to load packages in directory %q: %w", dir, err)
+	}
+	if len(pkgs) == 0 {
+		// todo maybe this should be an error?
+		slog.Warn("No packages found in directory " + dir)
+		return nil // No packages to process, so just return
 	}
 
 	// todo note: don't forget to walk the import graph to analyze imported functions -- maybe cache these to avoid re-analyzing them?
@@ -133,15 +143,13 @@ func parseDir(dir string, task Task) error {
 			// Actually process the file
 			slog.Debug("Processing file", "package", pkg.Name, "file", filePath)
 			task.Visit(fset, file)
-			// TODO move error handling here instead of inside Visit
 		}
 	}
 
 	// finished iterating without problem
 	slog.Info("Finished parsing all source files in directory", "dir", dir)
 	if err := task.ReportResults(); err != nil {
-		slog.Error("Failed to report results", "err", err)
-		return err
+		slog.Error("Error reporting task results", "err", err)
 	}
 	return nil
 }
