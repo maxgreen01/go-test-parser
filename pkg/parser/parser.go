@@ -2,6 +2,7 @@
 package parser
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -42,7 +44,7 @@ type Task interface {
 // Runs the specified task on all Go source files in the given directory.
 // If `splitByDir` is true, parses each top-level directory in the specified directory separately (ignoring top-level Go files).
 // todo maybe update the Task interface to include a method for getting flags (to avoid passing so many boilerplate params)
-func Parse(t Task, rootDir string, splitByDir bool) error {
+func Parse(t Task, rootDir string, splitByDir bool, threads int) error {
 	if rootDir == "" {
 		return errors.New("empty root directory provided")
 	}
@@ -64,29 +66,51 @@ func Parse(t Task, rootDir string, splitByDir bool) error {
 			return err
 		}
 
-		// todo maybe make this concurrent? would need to look into `filewriter` and `task.Clone` because they might not be thread-safe
 		var foundDir bool
+		// Define concurrency control variables
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(threads) // Limit the number of concurrent goroutines to avoid overwhelming the system
+		slog.Info("Using " + fmt.Sprint(threads) + " threads for parsing")
+
 		for _, entry := range entries {
 			if entry.IsDir() {
 				foundDir = true
 
-				// Clone the Task instance so each parsing run has a distinct output but uses the same underlying resources
-				newTask := t.Clone()
+				// Start a new goroutine for each subdirectory
+				g.Go(func() error {
+					// Clone the Task instance so each parsing run has a distinct output but uses the same underlying resources
+					newTask := t.Clone()
 
-				// Parse the subdirectory
-				subDir := filepath.Join(rootDir, entry.Name())
-				if err := parseDir(newTask, subDir); err != nil {
-					return fmt.Errorf("parsing subdirectory %q: %w", subDir, err)
-				}
+					// Check for cancellation before doing any work
+					select {
+					case <-gctx.Done():
+						return gctx.Err()
+					default:
+					}
+
+					// Parse the subdirectory
+					subDir := filepath.Join(rootDir, entry.Name())
+					if err := parseDir(gctx, newTask, subDir); err != nil {
+						return fmt.Errorf("parsing subdirectory %q: %w", subDir, err)
+					}
+					return nil
+				})
 			}
 		}
 		if !foundDir {
 			slog.Warn("No subdirectories found in project directory " + rootDir)
 			return nil // No files to process, so just return
 		}
+
+		// Wait for all the goroutines to finish
+		if err := g.Wait(); err != nil {
+			return err
+		}
 	} else {
 		// Parse the entire directory as a single unit
-		if err := parseDir(t, rootDir); err != nil {
+		if err := parseDir(context.Background(), t, rootDir); err != nil {
 			return err
 		}
 	}
@@ -105,7 +129,14 @@ func Parse(t Task, rootDir string, splitByDir bool) error {
 
 // Iterates over all Go source files in the specified directory and runs the provided task on each file.
 // After processing all files, calls the task's ReportResults method to output any accumulated results.
-func parseDir(task Task, dir string) error {
+func parseDir(ctx context.Context, task Task, dir string) error {
+	// Check for cancellation before starting
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	task.SetProjectDir(dir)
 
 	fmt.Println()
@@ -156,6 +187,13 @@ func parseDir(task Task, dir string) error {
 
 		// ========== Iterate over all files in the package ==========
 		for _, file := range pkg.Syntax {
+			// Check for cancellation before processing each file
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
 			filePath := fset.Position(file.Pos()).Filename
 
 			// Skip files in `vendor/` directory

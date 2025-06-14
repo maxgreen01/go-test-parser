@@ -61,6 +61,7 @@ func (cmd *AnalyzeCommand) SetProjectDir(dir string) {
 }
 
 // Validate the values of this Command's flags, then run the task itself
+// THIS SHOULD ONLY BE CALLED ONCE PER PROGRAM EXECUTION.
 func (cmd *AnalyzeCommand) Execute(args []string) error {
 	if cmd.globals.OutputPath == "" {
 		cmd.globals.OutputPath = "analyze_report.csv"
@@ -72,7 +73,7 @@ func (cmd *AnalyzeCommand) Execute(args []string) error {
 	}
 
 	// Actually run the task by starting the parser
-	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir)
+	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir, cmd.globals.Threads)
 }
 
 func (a *AnalyzeCommand) Visit(fset *token.FileSet, file *ast.File) {

@@ -68,7 +68,8 @@ func (cmd *StatisticsCommand) SetProjectDir(dir string) {
 	cmd.globals.ProjectDir = dir
 }
 
-// Validate the values of this Command's flags, then run the task itself
+// Validate the values of this Command's flags, then run the task itself.
+// THIS SHOULD ONLY BE CALLED ONCE PER PROGRAM EXECUTION.
 func (cmd *StatisticsCommand) Execute(args []string) error {
 	if cmd.globals.OutputPath == "" {
 		cmd.globals.OutputPath = "statistics_report.csv"
@@ -80,7 +81,7 @@ func (cmd *StatisticsCommand) Execute(args []string) error {
 	}
 
 	// Actually run the task by starting the parser
-	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir)
+	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir, cmd.globals.Threads)
 }
 
 func (s *StatisticsCommand) Visit(fset *token.FileSet, file *ast.File) {

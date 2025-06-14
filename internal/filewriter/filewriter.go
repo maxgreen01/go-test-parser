@@ -15,8 +15,8 @@ import (
 
 // Provides a simple, thread-safe way to write data to files in different formats.
 // File format is automatically detected based on the file extension.
-// This struct provides thread-safe methods for writing data to a file concurrently,
-// but only one `FileWriter` instance should refer to any particular file at a time.
+// This struct provides thread-safe methods for writing data to a file concurrently using shared references
+// to a FileWriter instance, but only one distinct `FileWriter` instance should refer to any particular file at a time.
 type FileWriter struct {
 	// Path to the output file. If the path does not contain a directory, (e.g. "output.txt"),
 	// the file it will be placed in the default output directory (which is determined at runtime).

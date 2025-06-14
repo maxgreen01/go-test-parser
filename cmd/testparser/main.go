@@ -104,9 +104,10 @@ func applyGlobals(opts *GlobalOptions) {
 	}
 	opts.ProjectDir = absPath
 
-	// Allowed options are handled by the `choice` tag in the struct definition
+	// Validate log level. Allowed options are handled by the `choice` tag in the struct definition.
 	opts.LogLevel = strings.ToLower(strings.TrimSpace(opts.LogLevel))
 
+	// Validate and resolve the output path, if specified. Additional validation and processing is done by FileWriter.
 	opts.OutputPath = strings.Trim(opts.OutputPath, "\t\n\v\f\r \"") // Trim whitespace and quotes
 	if opts.OutputPath != "" {
 		absPath, err := filepath.Abs(opts.OutputPath)
@@ -117,7 +118,13 @@ func applyGlobals(opts *GlobalOptions) {
 		opts.OutputPath = absPath
 	}
 
-	// Map string flag to slog.Level
+	// Validate the number of threads used if splitting by directory
+	if opts.Threads < 1 {
+		fmt.Printf("Invalid number of threads %d specified, must be at least 1\n", opts.Threads)
+		os.Exit(1)
+	}
+
+	// Map log level string value to a `slog.Level`
 	var level slog.Level
 	switch opts.LogLevel {
 	case "info":
