@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 
 	"github.com/maxgreen01/golang-test-parser/internal/config"
+	"github.com/maxgreen01/golang-test-parser/internal/filewriter"
 	"github.com/maxgreen01/golang-test-parser/pkg/parser"
 	"github.com/maxgreen01/golang-test-parser/pkg/testcase"
 
@@ -18,7 +20,10 @@ type AnalyzeCommand struct {
 	globals *config.GlobalOptions // Avoid embedding because it flag parser treats this as duplicating the global options
 	analyzeOptions
 
-	// Output fields
+	// Output file writer
+	output *filewriter.FileWriter
+
+	// Data fields
 	testCases []testcase.TestCase // list of actual test functions and related metadata
 }
 
@@ -39,14 +44,20 @@ func NewAnalyzeCommand(globals *config.GlobalOptions) *AnalyzeCommand {
 	return &AnalyzeCommand{globals: globals}
 }
 
-// Create a new instance of the AnalyzeCommand with the same initial state (except the specified project directory).
-func (cmd *AnalyzeCommand) Clone(dir string) parser.Task {
+// Create a new instance of the AnalyzeCommand with the same initial state and flags, COPYING `globals`.
+// Note that `output` is shared by reference, so the same `FileWriter` instance is shared by all cloned instances.
+func (cmd *AnalyzeCommand) Clone() parser.Task {
 	globals := *cmd.globals
-	globals.ProjectDir = dir
 	return &AnalyzeCommand{
 		globals:        &globals,
 		analyzeOptions: cmd.analyzeOptions,
+		output:         cmd.output,
 	}
+}
+
+// Set the project directory for this task.
+func (cmd *AnalyzeCommand) SetProjectDir(dir string) {
+	cmd.globals.ProjectDir = dir
 }
 
 // Validate the values of this Command's flags, then run the task itself
@@ -54,7 +65,13 @@ func (cmd *AnalyzeCommand) Execute(args []string) error {
 	if cmd.globals.OutputPath == "" {
 		cmd.globals.OutputPath = "analyze_report.csv"
 	}
+	// Initialize the output writer with the specified output path
+	cmd.output = filewriter.NewFileWriter(cmd.globals.OutputPath, cmd.globals.AppendOutput)
+	if cmd.output == nil {
+		return fmt.Errorf("failed to create output writer for path %q", cmd.globals.OutputPath)
+	}
 
+	// Actually run the task by starting the parser
 	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir)
 }
 
@@ -65,4 +82,10 @@ func (a *AnalyzeCommand) Visit(fset *token.FileSet, file *ast.File) {
 func (a *AnalyzeCommand) ReportResults() error {
 	// todo implement
 	return nil
+}
+
+func (a *AnalyzeCommand) Close() {
+	if a.output != nil {
+		a.output.Close()
+	}
 }

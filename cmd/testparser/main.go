@@ -62,10 +62,6 @@ func main() {
 			os.Exit(1)
 		}
 
-		fmt.Println()
-		slog.Info("Finished running the parser!", "task", task.Name(), "project", opts.ProjectDir)
-		fmt.Println()
-
 		return nil
 	}
 
@@ -85,6 +81,8 @@ func applyGlobals(opts *GlobalOptions) {
 	//
 	// =========== Validate flag values ===========
 	//
+
+	// Validate the project directory, resolve it to an absolute path, and check that it exists and is a directory
 	opts.ProjectDir = strings.Trim(opts.ProjectDir, "\t\n\v\f\r \"") // Trim whitespace and quotes
 	if opts.ProjectDir == "" {
 		fmt.Printf("You must provide a path to a Go project (e.g., ./myproject)!\n")
@@ -95,7 +93,15 @@ func applyGlobals(opts *GlobalOptions) {
 		fmt.Printf("Error resolving absolute path to Go project %q: %v\n", opts.ProjectDir, err)
 		os.Exit(1)
 	}
-	// todo check what happens if the path is a file, especially with `splitByDir` -- maybe check stat.isDir
+	info, err := os.Stat(absPath)
+	if err != nil {
+		fmt.Printf("Error accessing project path %q: %v\n", absPath, err)
+		os.Exit(1)
+	}
+	if !info.IsDir() {
+		fmt.Printf("Provided project path %q is not a directory!\n", absPath)
+		os.Exit(1)
+	}
 	opts.ProjectDir = absPath
 
 	// Allowed options are handled by the `choice` tag in the struct definition

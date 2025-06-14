@@ -24,16 +24,24 @@ type Task interface {
 	// Function called on every Go source file in the project, which may modify local state to save results
 	Visit(fset *token.FileSet, file *ast.File)
 
-	// Function called after all files have been processed
+	// Create a new instance of the task with the same initial state and flags.
+	// Used to ensure that each parsed directory can have an independent output.
+	Clone() Task
+
+	// Set the project directory for this task. Often used after Clone to set the directory for the new instance.
+	SetProjectDir(dir string)
+
+	// Function called after all files in the specified project directory have been processed
 	ReportResults() error
 
-	// Create a new instance of the Task with the same initial state and flags (except the specified project directory).
-	// Used to ensure that each parsed directory can have an independent output.
-	Clone(dir string) Task
+	// Close any resources used by this task and its clones, like file handles.
+	// Should only be called once after all instances of the task have finished, i.e. the parser is completely finished.
+	Close()
 }
 
 // Runs the specified task on all Go source files in the given directory.
 // If `splitByDir` is true, parses each top-level directory in the specified directory separately (ignoring top-level Go files).
+// todo maybe update the Task interface to include a method for getting flags (to avoid passing so many boilerplate params)
 func Parse(t Task, rootDir string, splitByDir bool) error {
 	if rootDir == "" {
 		return errors.New("empty root directory provided")
@@ -43,7 +51,7 @@ func Parse(t Task, rootDir string, splitByDir bool) error {
 	}
 
 	fmt.Println()
-	slog.Info("============ Running "+t.Name()+" task ============", "dir", rootDir)
+	slog.Info("============ Running " + t.Name() + " task on project \"" + rootDir + "\" ============")
 	fmt.Println()
 
 	// Run the parser either on the entire directory at once, or on each top-level sub-directory separately
@@ -55,31 +63,50 @@ func Parse(t Task, rootDir string, splitByDir bool) error {
 		if err != nil {
 			return err
 		}
-		// todo maybe make this concurrent? would need to look into `outputwriter` and `task.Clone` because they might not be thread-safe
+
+		// todo maybe make this concurrent? would need to look into `filewriter` and `task.Clone` because they might not be thread-safe
+		var foundDir bool
 		for _, entry := range entries {
 			if entry.IsDir() {
+				foundDir = true
+
+				// Clone the Task instance so each parsing run has a distinct output but uses the same underlying resources
+				newTask := t.Clone()
+
+				// Parse the subdirectory
 				subDir := filepath.Join(rootDir, entry.Name())
-				if err := parseDir(subDir, t); err != nil {
+				if err := parseDir(newTask, subDir); err != nil {
 					return fmt.Errorf("parsing subdirectory %q: %w", subDir, err)
 				}
 			}
 		}
+		if !foundDir {
+			slog.Warn("No subdirectories found in project directory " + rootDir)
+			return nil // No files to process, so just return
+		}
 	} else {
 		// Parse the entire directory as a single unit
-		if err := parseDir(rootDir, t); err != nil {
+		if err := parseDir(t, rootDir); err != nil {
 			return err
 		}
 	}
 
-	// Successfully parsed all files
+	// Successfully parsed all directories and files
+	fmt.Println()
+	slog.Info("Finished running the parser!", "task", t.Name(), "project", rootDir)
+	fmt.Println()
+
+	// Clean up resources used by the task
+	slog.Debug("Closing task resources")
+	t.Close()
+
 	return nil
 }
 
 // Iterates over all Go source files in the specified directory and runs the provided task on each file.
 // After processing all files, calls the task's ReportResults method to output any accumulated results.
-func parseDir(dir string, task Task) error {
-	// Create a new Task instance (with updated project dir) so each parsing run has a distinct output
-	task = task.Clone(dir)
+func parseDir(task Task, dir string) error {
+	task.SetProjectDir(dir)
 
 	fmt.Println()
 	fmt.Println()
@@ -117,6 +144,9 @@ func parseDir(dir string, task Task) error {
 		// Build a "set" of filepaths that have errors in this package before iterating files
 		errFiles := make(map[string]struct{}, len(pkgErrs))
 		for _, e := range pkgErrs {
+			// Print every error in the package
+			slog.Error("Error in package:", "error", e.Msg, "package", pkg.Name, "position", e.Pos)
+
 			colonIdx := strings.Index(e.Pos, ":")
 			if colonIdx > 0 {
 				file := e.Pos[:colonIdx]

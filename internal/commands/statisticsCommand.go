@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/maxgreen01/golang-test-parser/internal/config"
-	output "github.com/maxgreen01/golang-test-parser/internal/outputwriter"
+	"github.com/maxgreen01/golang-test-parser/internal/filewriter"
 	"github.com/maxgreen01/golang-test-parser/pkg/parser"
 	"github.com/maxgreen01/golang-test-parser/pkg/testcase"
 
@@ -23,7 +23,10 @@ type StatisticsCommand struct {
 	globals *config.GlobalOptions // Avoid embedding because it flag parser treats this as duplicating the global options
 	statisticsOptions
 
-	// Output fields
+	// Output file writer
+	output *filewriter.FileWriter
+
+	// Data fields
 	testCases []testcase.TestCase // list of actual test functions and related metadata
 
 	testFileCount  int // total number of files ending in "_test.go"
@@ -49,14 +52,20 @@ func NewStatisticsCommand(globals *config.GlobalOptions) *StatisticsCommand {
 	return &StatisticsCommand{globals: globals}
 }
 
-// Create a new instance of the StatisticsCommand with the same initial state (except the specified project directory).
-func (cmd *StatisticsCommand) Clone(dir string) parser.Task {
+// Create a new instance of the StatisticsCommand with the same initial state and flags, COPYING `globals`.
+// Note that `output` is shared by reference, so the same `FileWriter` instance is shared by all cloned instances.
+func (cmd *StatisticsCommand) Clone() parser.Task {
 	globals := *cmd.globals
-	globals.ProjectDir = dir
 	return &StatisticsCommand{
 		globals:           &globals,
 		statisticsOptions: cmd.statisticsOptions,
+		output:            cmd.output,
 	}
+}
+
+// Set the project directory for this task.
+func (cmd *StatisticsCommand) SetProjectDir(dir string) {
+	cmd.globals.ProjectDir = dir
 }
 
 // Validate the values of this Command's flags, then run the task itself
@@ -64,8 +73,13 @@ func (cmd *StatisticsCommand) Execute(args []string) error {
 	if cmd.globals.OutputPath == "" {
 		cmd.globals.OutputPath = "statistics_report.csv"
 	}
+	// Initialize the output writer with the specified output path
+	cmd.output = filewriter.NewFileWriter(cmd.globals.OutputPath, cmd.globals.AppendOutput)
+	if cmd.output == nil {
+		return fmt.Errorf("failed to create output writer for path %q", cmd.globals.OutputPath)
+	}
 
-	// todo maybe update the Task interface to include a method for getting flags (to avoid passing so many boilerplate params)
+	// Actually run the task by starting the parser
 	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir)
 }
 
@@ -113,7 +127,9 @@ func (s *StatisticsCommand) ReportResults() error {
 	percentTestLines := 0.0
 
 	if numTests == 0 {
-		reportLines = append(reportLines, "No test cases found in the specified project.\n")
+		reportLines = append(reportLines,
+			"No test cases found in the specified project.\n",
+			"\n")
 	} else {
 		// Calculate additional result statistics
 		avgTestLines = float64(s.totalTestLines) / float64(numTests)
@@ -133,16 +149,16 @@ func (s *StatisticsCommand) ReportResults() error {
 	}
 
 	// Print the report to the terminal
-	slog.Info("Finished parsing project \"" + s.globals.ProjectDir + "\"")
-	fmt.Print(strings.Join(reportLines, ""))
+	slog.Info("Finished running statistics task on project \"" + s.globals.ProjectDir + "\"")
+	fmt.Print(strings.Join(reportLines, "") + "\n")
 
 	// Append results to output file (text or CSV)
-	switch output.DetectFormat(s.globals.OutputPath) {
+	switch s.output.DetectFormat() {
 
-	case output.FormatText:
-		return output.WriteOutput(s.globals.OutputPath, reportLines, nil)
+	case filewriter.FormatTxt:
+		return s.output.Write(reportLines)
 
-	case output.FormatCSV:
+	case filewriter.FormatCSV:
 		csvHeaders := []string{
 			"ProjectDir",
 			"TestCases",
@@ -163,9 +179,16 @@ func (s *StatisticsCommand) ReportResults() error {
 			fmt.Sprintf("%.1f", percentTestLines),
 		}
 
-		return output.WriteOutput(s.globals.OutputPath, row, csvHeaders)
+		return s.output.Write(row, csvHeaders)
 
 	default:
-		return fmt.Errorf("unsupported output format (file %q)", s.globals.OutputPath)
+		return fmt.Errorf("unsupported output format (file %q)", s.output.GetPath())
+	}
+
+}
+
+func (s *StatisticsCommand) Close() {
+	if s.output != nil {
+		s.output.Close()
 	}
 }
