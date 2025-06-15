@@ -11,11 +11,13 @@ import (
 
 	"github.com/maxgreen01/golang-test-parser/internal/commands"
 	"github.com/maxgreen01/golang-test-parser/internal/config"
+	"github.com/maxgreen01/golang-test-parser/internal/filewriter"
 	"github.com/maxgreen01/golang-test-parser/pkg/parser"
 
 	"github.com/jessevdk/go-flags"
 	"github.com/lmittmann/tint"
 	"github.com/mattn/go-colorable"
+	slogmulti "github.com/samber/slog-multi"
 )
 
 // =========== Global command-line flag definitions ===========
@@ -85,21 +87,21 @@ func applyGlobals(opts *GlobalOptions) {
 	// Validate the project directory, resolve it to an absolute path, and check that it exists and is a directory
 	opts.ProjectDir = strings.Trim(opts.ProjectDir, "\t\n\v\f\r \"") // Trim whitespace and quotes
 	if opts.ProjectDir == "" {
-		fmt.Printf("You must provide a path to a Go project (e.g., ./myproject)!\n")
+		fmt.Fprintf(os.Stderr, "You must provide a path to a Go project (e.g., ./myproject)!\n")
 		os.Exit(1)
 	}
 	absPath, err := filepath.Abs(opts.ProjectDir)
 	if err != nil {
-		fmt.Printf("Error resolving absolute path to Go project %q: %v\n", opts.ProjectDir, err)
+		fmt.Fprintf(os.Stderr, "Error resolving absolute path to Go project %q: %v\n", opts.ProjectDir, err)
 		os.Exit(1)
 	}
 	info, err := os.Stat(absPath)
 	if err != nil {
-		fmt.Printf("Error accessing project path %q: %v\n", absPath, err)
+		fmt.Fprintf(os.Stderr, "Error accessing project path %q: %v\n", absPath, err)
 		os.Exit(1)
 	}
 	if !info.IsDir() {
-		fmt.Printf("Provided project path %q is not a directory!\n", absPath)
+		fmt.Fprintf(os.Stderr, "Provided project path %q is not a directory!\n", absPath)
 		os.Exit(1)
 	}
 	opts.ProjectDir = absPath
@@ -112,7 +114,7 @@ func applyGlobals(opts *GlobalOptions) {
 	if opts.OutputPath != "" {
 		absPath, err := filepath.Abs(opts.OutputPath)
 		if err != nil {
-			fmt.Printf("Error resolving absolute path for output file %q: %v\n", opts.OutputPath, err)
+			fmt.Fprintf(os.Stderr, "Error resolving absolute path for output file %q: %v\n", opts.OutputPath, err)
 			os.Exit(1)
 		}
 		opts.OutputPath = absPath
@@ -120,7 +122,7 @@ func applyGlobals(opts *GlobalOptions) {
 
 	// Validate the number of threads used if splitting by directory
 	if opts.Threads < 1 {
-		fmt.Printf("Invalid number of threads %d specified, must be at least 1\n", opts.Threads)
+		fmt.Fprintf(os.Stderr, "Invalid number of threads %d specified, must be at least 1\n", opts.Threads)
 		os.Exit(1)
 	}
 
@@ -137,14 +139,19 @@ func applyGlobals(opts *GlobalOptions) {
 		level = slog.LevelError
 	default:
 		// Should never happen because `LogLevel` options should be validated already
-		fmt.Printf("Invalid logLevel %q", opts.LogLevel)
+		fmt.Fprintf(os.Stderr, "Invalid logLevel %q", opts.LogLevel)
 		os.Exit(1)
 	}
 
 	//
-	// =========== Set up the logger (with tint for colored output) ===========
+	// =========== Set up the logger for program-wide use ===========
 	//
-	slog.SetDefault(slog.New(
+	// Aim to distribute logs to both `stderr` and a log file
+
+	var handlers []slog.Handler
+
+	// Crate `stderr` handler (with color output support)
+	handlers = append(handlers,
 		tint.NewHandler(colorable.NewColorableStderr(), &tint.Options{
 			Level:      level,
 			TimeFormat: time.DateTime,
@@ -158,5 +165,26 @@ func applyGlobals(opts *GlobalOptions) {
 				return a
 			},
 		}),
+	)
+
+	// Attempt to set up the log file at `output/testparser.log`, but don't crash if it fails
+	outputDir, dirErr := filewriter.GetDefaultOutputDir()
+	if dirErr != nil {
+		fmt.Fprintf(os.Stderr, "Could not determine default output directory for logs: %v\n", dirErr)
+	} else {
+		logFilePath := filepath.Join(outputDir, "testparser.log")
+		logFile, fileErr := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+
+		if fileErr != nil {
+			fmt.Fprintf(os.Stderr, "Could not open log file %q: %v\n", logFilePath, fileErr)
+		} else {
+			// Create a handler to write logs to the file if it was successfully opened
+			handlers = append(handlers, slog.NewTextHandler(logFile, &slog.HandlerOptions{Level: level}))
+		}
+	}
+
+	// Put the loggers together and set the default logger
+	slog.SetDefault(slog.New(
+		slogmulti.Fanout(handlers...),
 	))
 }

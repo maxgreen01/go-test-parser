@@ -77,7 +77,7 @@ func (writer *FileWriter) SetPath(path string) error {
 
 	// If the path doesn't have a directory, prepend the output directory
 	if filepath.Dir(path) == "." {
-		outputDir, err := getDefaultOutputDir()
+		outputDir, err := GetDefaultOutputDir()
 		if err != nil {
 			return fmt.Errorf("setting output file path: %w", err)
 		}
@@ -156,7 +156,7 @@ func (writer *FileWriter) Close() {
 }
 
 //
-// =============== Private utility functions ===============
+// =============== Utility functions ===============
 //
 
 // Open the output file for writing, creating it if it doesn't exist and respecting the `append` flag.
@@ -205,8 +205,8 @@ func (writer *FileWriter) openFile() error {
 // Default directory name for output files, relative to the program root (which is determined at runtime).
 const defaultOutputDirName = "output"
 
-// Get the default output directory relative to the project root
-func getDefaultOutputDir() (string, error) {
+// Get the default output directory relative to the project root (determined at runtime)
+func GetDefaultOutputDir() (string, error) {
 	root, err := getProgramRoot()
 	if err != nil {
 		return "", fmt.Errorf("getting default output directory: %w", err)
