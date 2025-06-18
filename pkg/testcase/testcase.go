@@ -9,9 +9,9 @@ import (
 	"go/printer"
 	"go/token"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/maxgreen01/golang-test-parser/internal/filewriter"
 )
 
 // Represents an individual test case defined at the top level of a Go source file
@@ -272,54 +272,33 @@ func (t TestCase) String() string {
 }
 
 // Save the TestCase as JSON to a file named like `<project>/<project>_<package>_<testcase>.json` in the output directory
-// todo move this into FileWriter
 func (t TestCase) SaveAsJSON() error {
 	slog.Info("Saving test case as JSON", "testCase", t)
 
-	// Create the file
-	fileName := fmt.Sprintf("output/%s/%s_%s_%s.json", t.Project, t.Project, t.Package, t.Name) //todo make filepath more robust
-	filePath, err := filepath.Abs(fileName)
+	path := fmt.Sprintf("%s/%s_%s_%s.json", t.Project, t.Project, t.Package, t.Name) // save data as JSON
+	err := filewriter.WriteToFile(path, t)
 	if err != nil {
-		return fmt.Errorf("resolving absolute path for TestCase JSON file %q: %v\n", filePath, err)
+		return fmt.Errorf("saving test case %q as JSON: %w", t.Name, err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-		return fmt.Errorf("creating output directory: %w", err)
-	}
-
-	file, err := os.Create(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to create JSON file %q: %w", fileName, err)
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")  // Set indentation for pretty printing
-	encoder.SetEscapeHTML(false) // Retain characters like '<', '>', '&' in the output
-
-	// Marshal the TestCase to JSON and write it to the file
-	if err := encoder.Encode(t); err != nil {
-		return fmt.Errorf("encoding TestCase as JSON: %w", err)
-	}
-
-	slog.Info("Saved test case as JSON", "filePath", filePath)
+	slog.Info("Saved test case as JSON", "filePath", path)
 	return nil
+}
+
+// Helper struct for JSON output
+// todo move as many of these JSON fields to the main struct as possible
+type testCaseJSON struct {
+	Name             string   `json:"name"`
+	Package          string   `json:"package"`
+	FileName         string   `json:"filename"`
+	TableDrivenType  string   `json:"tableDrivenType"`
+	ParsedStatements []string `json:"parsedStatements"`
+	ImportedPackages []string `json:"importedPackages"`
+	FuncDecl         string   `json:"funcDecl"`
 }
 
 // Marshal the TestCase for JSON output
 func (t TestCase) MarshalJSON() ([]byte, error) {
-	// Helper struct for JSON output
-	// todo move as many of these JSON fields to the main struct as possible
-	type testCaseJSON struct {
-		Name             string   `json:"name"`
-		Package          string   `json:"package"`
-		FileName         string   `json:"filename"`
-		TableDrivenType  string   `json:"tableDrivenType"`
-		ParsedStatements []string `json:"parsedStatements"`
-		ImportedPackages []string `json:"importedPackages"`
-		FuncDecl         string   `json:"funcDecl"`
-	}
-
 	// Convert statements to string representations
 	// todo replace with a method for analyzing and expanding statements
 	stmts := t.GetStatements()
@@ -346,6 +325,22 @@ func (t TestCase) MarshalJSON() ([]byte, error) {
 		FuncDecl:         funcDeclStr,
 	}
 	return json.Marshal(out)
+}
+
+// Unmarshal the TestCase from JSON
+func (t *TestCase) UnmarshalJSON(data []byte) error {
+	var aux testCaseJSON
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	t.Name = aux.Name
+	t.Package = aux.Package
+	t.FileName = aux.FileName
+	t.tableDrivenType = aux.TableDrivenType
+	t.parsedStatements = aux.ParsedStatements
+	t.importedPackages = aux.ImportedPackages
+	// t.FuncDecl, t.File, t.fset cannot be restored from JSON
+	return nil
 }
 
 // Convert an AST node to a string representation using `go/printer`, or return "ERROR" if formatting fails

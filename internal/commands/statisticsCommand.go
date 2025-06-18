@@ -76,10 +76,11 @@ func (cmd *StatisticsCommand) Execute(args []string) error {
 		cmd.globals.OutputPath = "statistics_report.csv"
 	}
 	// Initialize the output writer with the specified output path
-	cmd.output = filewriter.NewFileWriter(cmd.globals.OutputPath, cmd.globals.AppendOutput)
-	if cmd.output == nil {
+	writer, err := filewriter.NewFileWriter(cmd.globals.OutputPath, cmd.globals.AppendOutput)
+	if err != nil {
 		return fmt.Errorf("failed to create output writer for path %q", cmd.globals.OutputPath)
 	}
+	cmd.output = writer
 
 	// Actually run the task by starting the parser
 	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir, cmd.globals.Threads)

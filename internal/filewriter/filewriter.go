@@ -20,7 +20,7 @@ import (
 // This struct provides thread-safe methods for writing data to a file concurrently using shared references
 // to a FileWriter instance, but only one distinct `FileWriter` instance should refer to any particular file at a time.
 type FileWriter struct {
-	// Path to the output file. If the path does not contain a directory, (e.g. "output.txt"),
+	// Path to the output file. If the path is not absolute, (e.g. "result.txt"),
 	// the file it will be placed in the default output directory (which is determined at runtime).
 	path string
 
@@ -28,6 +28,7 @@ type FileWriter struct {
 	format FileFormat
 
 	// Whether to append to the output file instead of overwriting it if the file already exists.
+	// Always set to `false` for JSON files, since they are always overwritten.
 	append bool
 
 	// Reference to the file being written to, or `nil` if it has not been opened yet.
@@ -41,8 +42,8 @@ type FileWriter struct {
 }
 
 // Creates a new FileWriter instance with the specified fields.
-// If the path does not contain a directory, the file will be placed in the default output directory (which is determined at runtime).
-func NewFileWriter(path string, append bool) *FileWriter {
+// If the path is not absolute, the file will be placed in the default output directory (which is determined at runtime).
+func NewFileWriter(path string, append bool) (*FileWriter, error) {
 	// initialize simple fields
 	writer := &FileWriter{}
 	writer.append = append
@@ -50,12 +51,15 @@ func NewFileWriter(path string, append bool) *FileWriter {
 	// Validate the path, set the format, and actually open the file.
 	// This also initializes an `appender` instance based on the detected file format
 	if err := writer.SetPath(path); err != nil {
-		slog.Error("Error constructing FileWriter", "err", err)
-		return nil
+		return nil, fmt.Errorf("constructing FileWriter for %q: %w", path, err)
 	}
 
-	return writer
+	return writer, nil
 }
+
+//
+// =============== FileWriter methods ===============
+//
 
 // Gets the output file path for this FileWriter instance in a thread-safe manner.
 func (writer *FileWriter) GetPath() string {
@@ -66,7 +70,7 @@ func (writer *FileWriter) GetPath() string {
 
 // Sets the output file path and format for this FileWriter instance in a thread-safe manner,
 // then opens the file and initializes related fields.
-// Prepends the default output directory (determined at runtime) if the provided path does not contain a directory.
+// Prepends the default output directory (determined at runtime) if the provided path isn't absolute.
 func (writer *FileWriter) SetPath(path string) error {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
@@ -77,19 +81,21 @@ func (writer *FileWriter) SetPath(path string) error {
 		writer.Close()
 	}
 
-	// If the path doesn't have a directory, prepend the output directory
-	if filepath.Dir(path) == "." {
-		outputDir, err := GetDefaultOutputDir()
-		if err != nil {
-			return fmt.Errorf("setting output file path: %w", err)
-		}
-		path = filepath.Join(outputDir, path)
+	// If the path isn't absolute, prepend the output directory
+	path, err := PrependDefaultOutputDir(path)
+	if err != nil {
+		return fmt.Errorf("setting output file path: %w", err)
 	}
 
 	writer.path = path
 	writer.format = DetectFormat(path)
 	if writer.format == FormatUnknown {
 		return fmt.Errorf("unsupported output file format (file %q)", path)
+	}
+
+	// Override certain options based on the file format
+	if writer.format == FormatJSON {
+		writer.append = false // JSON files are always overwritten, not appended
 	}
 
 	// Open the file and initialize related fields
@@ -100,13 +106,56 @@ func (writer *FileWriter) SetPath(path string) error {
 	return nil
 }
 
+// Open the output file for writing, creating it if it doesn't exist and respecting the `append` flag.
+// Also populates the `appender` field based on the detected file format.
+// This operation is not inherently thread-safe, and should be synchronized by the caller.
+func (writer *FileWriter) openFile() error {
+	if writer.file != nil {
+		slog.Warn("Output file is already open, skipping re-opening", "outputPath", writer.path)
+		return nil // todo maybe make this an error
+	}
+
+	path := writer.path
+
+	// Create the path's parent directory if it doesn't already exist.
+	// This is checked before every write operation in case the directory was deleted or moved since the last write.
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fmt.Errorf("creating output file's parent directory: %w", err)
+	}
+
+	// Clear the existing file if it already exists (unless the `append` flag is set)
+	flag := os.O_CREATE | os.O_RDWR
+	if writer.append {
+		slog.Debug("Appending to output file in case it already exists", "outputPath", path)
+		flag |= os.O_APPEND
+	} else {
+		flag |= os.O_TRUNC
+		slog.Debug("Truncating output file in case it already exists", "outputPath", path)
+	}
+
+	// Actually open the file
+	f, err := os.OpenFile(writer.path, flag, 0644)
+	if err != nil {
+		return fmt.Errorf("opening output file %q: %w", path, err)
+	}
+	writer.file = f
+
+	// Initialize the `appender` based on the detected file format
+	writer.appender = newAppender(writer.format, writer.file)
+	if writer.appender == nil {
+		return fmt.Errorf("appender not supported for output file %q", writer.path)
+	}
+
+	return nil
+}
+
 // Write data to the file associated with this FileWriter instance, with file format automatically detected.
-// The provided arguments will have a different form depending on the file format:
-//   - For text files, each string in `data` is a line of text, and `otherData` is ignored.
-//   - For CSV files, `data` represents a single record with each string being a field, and
-//     `otherData[0]` represents CSV headers that will be written if the file is empty.
-func (writer *FileWriter) Write(data []string, otherData ...[]string) error {
-	if len(data) == 0 {
+// The provided arguments will have different type and structure requirements depending on the file format:
+//   - For text files, `data` must be a string or []string where each element is a line of text, and `otherData` is ignored.
+//   - For CSV files, `data` must be a []string representing a single record with each string being a field, and
+//     `otherData[0]` must be a string[] representing CSV headers that will be written if the file is empty.
+func (writer *FileWriter) Write(data any, otherData ...any) error {
+	if data == nil {
 		return nil // Nothing to write
 	}
 
@@ -115,7 +164,7 @@ func (writer *FileWriter) Write(data []string, otherData ...[]string) error {
 	defer writer.mu.Unlock()
 
 	if writer.file == nil || writer.appender == nil {
-		return errors.New("writer is not properly initialized - try calling SetPath() first")
+		return errors.New("cannot write data with uninitialized properties - call SetPath() first")
 	}
 
 	// Write the data to the file based on the detected format
@@ -161,46 +210,19 @@ func (writer *FileWriter) Close() {
 // =============== Utility functions ===============
 //
 
-// Open the output file for writing, creating it if it doesn't exist and respecting the `append` flag.
-// Also populates the `appender` field based on the detected file format.
-// This operation is not inherently thread-safe, and should be synchronized by the caller.
-func (writer *FileWriter) openFile() error {
-	if writer.file != nil {
-		slog.Warn("Output file is already open, skipping re-opening", "outputPath", writer.path)
-		return nil // todo maybe make this an error
-	}
-
-	path := writer.path
-
-	// Create the path's directory (including parents) if it doesn't already exist.
-	// This is checked before every write operation in case the directory was deleted or moved since the last write.
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("creating output directory: %w", err)
-	}
-
-	// Clear the existing file if it already exists (unless the `append` flag is set)
-	flag := os.O_CREATE | os.O_RDWR
-	if writer.append {
-		slog.Debug("Appending to output file in case it already exists", "outputPath", path)
-		flag |= os.O_APPEND
-	} else {
-		flag |= os.O_TRUNC
-		slog.Debug("Truncating output file in case it already exists", "outputPath", path)
-	}
-
-	// Actually open the file
-	f, err := os.OpenFile(writer.path, flag, 0644)
+// Write some piece of data to a file (overwriting if it already exists),
+// with the file format automatically detected based on the file extension.
+// This is a shortcut for creating a new FileWriter instance, writing to it, and closing it.
+func WriteToFile(path string, data any, otherData ...any) error {
+	writer, err := NewFileWriter(path, false)
 	if err != nil {
-		return fmt.Errorf("opening output file %q: %w", path, err)
+		return err
 	}
-	writer.file = f
+	defer writer.Close()
 
-	// Initialize the `appender` based on the detected file format
-	writer.appender = newAppender(writer.format, writer.file)
-	if writer.appender == nil {
-		return fmt.Errorf("appender not supported for output file %q", writer.path)
+	if err := writer.Write(data, otherData...); err != nil {
+		return err
 	}
-
 	return nil
 }
 
@@ -214,6 +236,20 @@ func GetDefaultOutputDir() (string, error) {
 		return "", fmt.Errorf("getting default output directory: %w", err)
 	}
 	return filepath.Join(root, defaultOutputDirName), nil
+}
+
+// If the provided path is not absolute, prepend the default output directory (determined at runtime) to it.
+// If the path is already absolute, return it unchanged.
+func PrependDefaultOutputDir(path string) (string, error) { //todo maybe rename like PrepareFilePath with arg to create the dir (for use in `main`)
+	if filepath.IsAbs(path) {
+		return path, nil
+	}
+
+	outputDir, err := GetDefaultOutputDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(outputDir, path), nil
 }
 
 // Get the project root directory based on the executable path, or using the current working directory
