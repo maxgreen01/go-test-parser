@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"log/slog"
+	"path/filepath"
 
 	"github.com/maxgreen01/golang-test-parser/internal/config"
 	"github.com/maxgreen01/golang-test-parser/internal/filewriter"
@@ -77,11 +79,42 @@ func (cmd *AnalyzeCommand) Execute(args []string) error {
 }
 
 func (a *AnalyzeCommand) Visit(fset *token.FileSet, file *ast.File) {
-	// todo implement
+	projectName := filepath.Base(a.globals.ProjectDir)
+	// packageName := file.Name.Name
+	// fileName := fset.Position(file.Pos()).Filename
+
+	// Only iterate top level declarations
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+
+		// slog.Debug("Checking function...", "name", fn.Name.Name, "package", packageName, "file", fileName)
+
+		// Save the function as a valid test case if it meets all the criteria
+		valid, _ := testcase.IsValidTestCase(fn)
+		// todo do something with the `badFormat` return value
+		if !valid {
+			continue
+		}
+		tc := testcase.CreateTestCase(fn, file, fset, projectName)
+		tc.Analyze()
+
+		a.testCases = append(a.testCases, tc)
+	}
 }
 
 func (a *AnalyzeCommand) ReportResults() error {
-	// todo implement
+	slog.Info("Analysis complete", "testCases", len(a.testCases))
+
+	for _, tc := range a.testCases {
+		err := tc.SaveAsJSON()
+		if err != nil {
+			return fmt.Errorf("saving test case %q as JSON: %w", tc.Name, err)
+		}
+	}
+
 	return nil
 }
 

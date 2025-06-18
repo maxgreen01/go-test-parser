@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
 	"github.com/maxgreen01/golang-test-parser/internal/config"
@@ -85,6 +86,7 @@ func (cmd *StatisticsCommand) Execute(args []string) error {
 }
 
 func (s *StatisticsCommand) Visit(fset *token.FileSet, file *ast.File) {
+	projectName := filepath.Base(s.globals.ProjectDir)
 	packageName := file.Name.Name
 	fileName := fset.Position(file.Pos()).Filename
 
@@ -105,13 +107,16 @@ func (s *StatisticsCommand) Visit(fset *token.FileSet, file *ast.File) {
 		slog.Debug("Checking function...", "name", fn.Name.Name, "package", packageName, "file", fileName)
 
 		// Save the function as a valid test case if it meets all the criteria
-		if valid, _ := testcase.IsValidTestCase(fn); valid {
-			tc := testcase.CreateTestCase(fn, fset, packageName)
-			s.testCases = append(s.testCases, tc)
-
-			lines := tc.NumLines()
-			s.totalTestLines += lines
+		valid, _ := testcase.IsValidTestCase(fn)
+		if !valid {
+			continue
 		}
+
+		tc := testcase.CreateTestCase(fn, file, fset, projectName)
+		s.testCases = append(s.testCases, tc)
+
+		lines := tc.NumLines()
+		s.totalTestLines += lines
 	}
 }
 

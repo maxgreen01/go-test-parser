@@ -13,6 +13,8 @@ import (
 	"sync"
 )
 
+// todo maybe add util functions for quickly opening/closing a file and writing a single piece of data (especially JSON)
+
 // Provides a simple, thread-safe way to write data to files in different formats.
 // File format is automatically detected based on the file extension.
 // This struct provides thread-safe methods for writing data to a file concurrently using shared references

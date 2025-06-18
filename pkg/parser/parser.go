@@ -209,7 +209,7 @@ func parseDir(ctx context.Context, task Task, dir string) error {
 			}
 
 			// Actually process the file
-			slog.Debug("Processing file", "package", pkg.Name, "file", filePath)
+			// slog.Debug("Processing file", "package", pkg.Name, "file", filePath)
 			task.Visit(fset, file)
 		}
 	}
