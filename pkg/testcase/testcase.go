@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/printer"
 	"go/token"
 	"log/slog"
@@ -145,6 +146,10 @@ func IsValidTestCase(funcDecl *ast.FuncDecl) (valid bool, badFormat bool) {
 
 // Return the list of statements in this test case
 func (t *TestCase) GetStatements() []ast.Stmt {
+	if t.FuncDecl == nil || t.FuncDecl.Body == nil {
+		slog.Warn("Cannot get statements from test case because FuncDecl or its body is nil", "testCase", t.Name)
+		return nil
+	}
 	return t.FuncDecl.Body.List
 }
 
@@ -155,6 +160,10 @@ func (t TestCase) NumStatements() int {
 
 // Return the number of individual lines (not statements) that the test case spans
 func (t TestCase) NumLines() int {
+	if t.FuncDecl == nil || t.fset == nil {
+		slog.Warn("Cannot determine number of lines in test case because FuncDecl or fset is nil", "testCase", t.Name)
+		return -1
+	}
 	start := t.fset.Position(t.FuncDecl.Pos())
 	end := t.fset.Position(t.FuncDecl.End())
 	return end.Line - start.Line + 1
@@ -260,8 +269,15 @@ func (t *TestCase) Analyze() {
 		t.tableDrivenType += ", no loop"
 	}
 
-	// Parse imported packages in this file
-	for _, imp := range t.File.Imports {
+	// Extract imported packages from the file's AST
+
+	var imports []*ast.ImportSpec
+	if t.File != nil {
+		imports = t.File.Imports
+	} else {
+		slog.Warn("Cannot extract imported packages in test case because File is nil", "testCase", t.Name)
+	}
+	for _, imp := range imports {
 		t.importedPackages = append(t.importedPackages, strings.Trim(imp.Path.Value, "\""))
 	}
 }
@@ -285,44 +301,35 @@ func (t TestCase) SaveAsJSON() error {
 	return nil
 }
 
-// Helper struct for JSON output
-// todo move as many of these JSON fields to the main struct as possible
+// Helper struct for Marshaling and Unmarshaling JSON.
+// Transforms all `ast` nodes to their string representations.
 type testCaseJSON struct {
-	Name             string   `json:"name"`
-	Package          string   `json:"package"`
-	FileName         string   `json:"filename"`
+	Name     string `json:"name"`
+	Package  string `json:"package"`
+	FileName string `json:"filename"`
+	Project  string `json:"project"`
+
 	TableDrivenType  string   `json:"tableDrivenType"`
 	ParsedStatements []string `json:"parsedStatements"`
 	ImportedPackages []string `json:"importedPackages"`
-	FuncDecl         string   `json:"funcDecl"`
+
+	FuncDecl string `json:"funcDecl"`
+	// File and fset are not saved
 }
 
 // Marshal the TestCase for JSON output
 func (t TestCase) MarshalJSON() ([]byte, error) {
-	// Convert statements to string representations
-	// todo replace with a method for analyzing and expanding statements
-	stmts := t.GetStatements()
-	parsedStatements := make([]string, len(stmts))
-	for i, stmt := range stmts {
-		parsedStatements[i] = nodeToString(stmt, t.fset)
-	}
-
-	tableDrivenType := t.tableDrivenType
-
-	// Extract imported packages from the file's AST
-	importedPackages := t.importedPackages
-
-	// Convert function declaration to a string (including doc comments)
-	funcDeclStr := nodeToString(t.FuncDecl, t.fset)
-
 	out := testCaseJSON{
-		Name:             t.Name,
-		Package:          t.Package,
-		FileName:         t.FileName,
-		TableDrivenType:  tableDrivenType,
-		ParsedStatements: parsedStatements,
-		ImportedPackages: importedPackages,
-		FuncDecl:         funcDeclStr,
+		Name:     t.Name,
+		Package:  t.Package,
+		FileName: t.FileName,
+		Project:  t.Project,
+
+		TableDrivenType:  t.tableDrivenType,
+		ParsedStatements: t.parsedStatements,
+		ImportedPackages: t.importedPackages,
+
+		FuncDecl: nodeToString(t.FuncDecl, t.fset),
 	}
 	return json.Marshal(out)
 }
@@ -333,16 +340,40 @@ func (t *TestCase) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
-	t.Name = aux.Name
-	t.Package = aux.Package
-	t.FileName = aux.FileName
-	t.tableDrivenType = aux.TableDrivenType
-	t.parsedStatements = aux.ParsedStatements
-	t.importedPackages = aux.ImportedPackages
-	// t.FuncDecl, t.File, t.fset cannot be restored from JSON
+
+	// Try to decode complex fields
+
+	var funcDecl *ast.FuncDecl
+	expr, err := stringToNode(aux.FuncDecl)
+	if err != nil {
+		slog.Error("Failed to parse TestCase FuncDecl from JSON", "error", err)
+	} else {
+		// Only check the type if the string was parsed successfully
+		if decl, ok := expr.(*ast.FuncDecl); ok {
+			funcDecl = decl
+		} else {
+			slog.Error("Failed to parse TestCase FuncDecl from JSON because it is not a valid function declaration", "string", aux.FuncDecl)
+		}
+	}
+
+	// Save data into the main struct
+	*t = TestCase{
+		Name:     aux.Name,
+		Package:  aux.Package,
+		FileName: aux.FileName,
+		Project:  aux.Project,
+
+		tableDrivenType:  aux.TableDrivenType,
+		parsedStatements: aux.ParsedStatements,
+		importedPackages: aux.ImportedPackages,
+
+		FuncDecl: funcDecl,
+		// File and fset cannot be restored from JSON because they aren't saved
+	}
 	return nil
 }
 
+// todo maybe move these to an internal utils package
 // Convert an AST node to a string representation using `go/printer`, or return "ERROR" if formatting fails
 func nodeToString(node ast.Node, fset *token.FileSet) string {
 	var buf bytes.Buffer
@@ -353,4 +384,44 @@ func nodeToString(node ast.Node, fset *token.FileSet) string {
 	}
 
 	return buf.String()
+}
+
+// Parse a string (usually from JSON) into the corresponding AST expression.
+// This function tries to parse the string as a declaration, statement, or expression in that order.
+func stringToNode(str string) (ast.Node, error) {
+	// First try parsing the string as a declaration by treating the string as a Go source file
+	fset := token.NewFileSet()
+	fileStr := "package dummy\n" + str
+	file, err := parser.ParseFile(fset, "", fileStr, parser.ParseComments)
+	if err == nil {
+		// Extract and return the first declaration in the file
+		if len(file.Decls) > 0 {
+			return file.Decls[0], nil
+		}
+		slog.Debug("Parsed dummy file has no declarations; now trying to parse as statement or expression", "input", str)
+	}
+
+	// Try parsing the string as a statement by wrapping the string in a function
+	funcStr := "package dummy\nfunc dummyFunc() {\n" + str + "\n}"
+	file, err = parser.ParseFile(fset, "", funcStr, parser.ParseComments)
+	if err == nil {
+		// Extract and return the first statement in the function body
+		if len(file.Decls) > 0 {
+			if funcDecl, ok := file.Decls[0].(*ast.FuncDecl); ok && len(funcDecl.Body.List) > 0 {
+				return funcDecl.Body.List[0], nil
+			}
+			slog.Debug("Parsed dummy function has no statements; now trying to parse as expression", "file", funcStr)
+		}
+		// This case should never happen
+		slog.Debug("Parsed dummy file (with dummy function) has no declarations; now trying to parse as expression", "input", str)
+	}
+
+	// Try parsing the original string as an expression
+	expr, err := parser.ParseExpr(str)
+	if err == nil {
+		// If the string is a valid expression, return it
+		return expr, nil
+	}
+
+	return nil, fmt.Errorf("failed to parse node string %q: %w", str, err)
 }
