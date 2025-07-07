@@ -7,10 +7,10 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"github.com/maxgreen01/golang-test-parser/internal/config"
-	"github.com/maxgreen01/golang-test-parser/internal/filewriter"
-	"github.com/maxgreen01/golang-test-parser/pkg/parser"
-	"github.com/maxgreen01/golang-test-parser/pkg/testcase"
+	"github.com/maxgreen01/go-test-parser/internal/config"
+	"github.com/maxgreen01/go-test-parser/internal/filewriter"
+	"github.com/maxgreen01/go-test-parser/pkg/parser"
+	"github.com/maxgreen01/go-test-parser/pkg/testcase"
 
 	"github.com/jessevdk/go-flags"
 )

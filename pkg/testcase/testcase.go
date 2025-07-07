@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/maxgreen01/golang-test-parser/internal/filewriter"
+	"github.com/maxgreen01/go-test-parser/internal/filewriter"
 )
 
 // Represents an individual test case defined at the top level of a Go source file
