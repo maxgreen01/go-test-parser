@@ -66,7 +66,7 @@ func (cmd *AnalyzeCommand) SetProjectDir(dir string) {
 // THIS SHOULD ONLY BE CALLED ONCE PER PROGRAM EXECUTION.
 func (cmd *AnalyzeCommand) Execute(args []string) error {
 	if cmd.globals.OutputPath == "" {
-		cmd.globals.OutputPath = "analyze_report.csv"
+		cmd.globals.OutputPath = "analyze_report.txt"
 	}
 	// Initialize the output writer with the specified output path
 	writer, err := filewriter.NewFileWriter(cmd.globals.OutputPath, cmd.globals.AppendOutput)
