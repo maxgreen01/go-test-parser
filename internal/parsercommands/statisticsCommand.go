@@ -44,19 +44,18 @@ var _ ParserCommand = (*StatisticsCommand)(nil)
 
 // Register the command with the global flag parser
 func init() {
-	slog.Info("Registering statistics command")
 	RegisterCommand(func(flagParser *flags.Parser, opts *config.GlobalOptions) {
 		flagParser.AddCommand("analyze", "Analyze a Go projects' tests", "", NewAnalyzeCommand(opts))
 	})
 }
 
-func (s *StatisticsCommand) Name() string {
-	return "statistics"
-}
-
 // Create a new instance of the StatisticsCommand using a reference to the global options.
 func NewStatisticsCommand(globals *config.GlobalOptions) *StatisticsCommand {
 	return &StatisticsCommand{globals: globals}
+}
+
+func (cmd *StatisticsCommand) Name() string {
+	return "statistics"
 }
 
 // Create a new instance of the StatisticsCommand with the same initial state and flags, COPYING `globals`.
@@ -92,17 +91,17 @@ func (cmd *StatisticsCommand) Execute(args []string) error {
 	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir, cmd.globals.Threads)
 }
 
-func (s *StatisticsCommand) Visit(fset *token.FileSet, file *ast.File) {
-	projectName := filepath.Base(s.globals.ProjectDir)
+func (cmd *StatisticsCommand) Visit(fset *token.FileSet, file *ast.File) {
+	projectName := filepath.Base(cmd.globals.ProjectDir)
 	packageName := file.Name.Name
 	fileName := fset.Position(file.Pos()).Filename
 
 	// increment project-scale statistics
-	s.totalFileCount++
+	cmd.totalFileCount++
 	if strings.HasSuffix(fileName, "_test.go") {
-		s.testFileCount++
+		cmd.testFileCount++
 	}
-	s.totalLines += fset.Position(file.End()).Line - fset.Position(file.Pos()).Line + 1
+	cmd.totalLines += fset.Position(file.End()).Line - fset.Position(file.Pos()).Line + 1
 
 	// Only iterate top level declarations
 	for _, decl := range file.Decls {
@@ -120,41 +119,39 @@ func (s *StatisticsCommand) Visit(fset *token.FileSet, file *ast.File) {
 		}
 
 		tc := testcase.CreateTestCase(fn, file, fset, projectName)
-		s.testCases = append(s.testCases, tc)
+		cmd.testCases = append(cmd.testCases, tc)
 
 		lines := tc.NumLines()
-		s.totalTestLines += lines
+		cmd.totalTestLines += lines
 	}
 }
 
-func (s *StatisticsCommand) ReportResults() error {
+func (cmd *StatisticsCommand) ReportResults() error {
 	// Format output for printing the report to the terminal (and potentially writing to a text file)
 
 	reportLines := []string{
-		fmt.Sprintf("\n=============  Statistics Report for %q:  =============\n\n", s.globals.ProjectDir),
+		fmt.Sprintf("\n=============  Statistics Report for %q:  =============\n\n", cmd.globals.ProjectDir),
 	}
 
 	// Define additional result statistics
-	numTests := len(s.testCases)
+	numTests := len(cmd.testCases)
 	avgTestLines := 0.0
 	percentTestLines := 0.0
 
 	if numTests == 0 {
-		reportLines = append(reportLines,
-			"No test cases found in the specified project.\n",
-			"\n")
+		reportLines = append(reportLines, "No test cases found in the specified project.\n\n")
 	} else {
 		// Calculate additional result statistics
-		avgTestLines = float64(s.totalTestLines) / float64(numTests)
-		percentTestLines = float64(s.totalTestLines) / float64(s.totalLines) * 100
+		avgTestLines = float64(cmd.totalTestLines) / float64(numTests)
+		percentTestLines = float64(cmd.totalTestLines) / float64(cmd.totalLines) * 100
 
 		reportLines = append(reportLines,
 			fmt.Sprintf("Total number of test cases: %d\n", numTests),
 			"\n",
-			fmt.Sprintf("Number of '_test.go' files: %d\n", s.testFileCount),
-			fmt.Sprintf("Total number of Go files: %d\n", s.totalFileCount),
+			fmt.Sprintf("Number of '_test.go' files: %d\n", cmd.testFileCount),
+			fmt.Sprintf("Total number of Go files: %d\n", cmd.totalFileCount),
 			"\n",
-			fmt.Sprintf("Total lines of test code: %d\n", s.totalTestLines),
+			fmt.Sprintf("Total lines of test code: %d\n", cmd.totalTestLines),
 			fmt.Sprintf("Average lines per test case: %.1f\n", avgTestLines),
 			fmt.Sprintf("Percentage of total lines for test cases: %.1f%%\n", percentTestLines),
 			"\n",
@@ -162,46 +159,45 @@ func (s *StatisticsCommand) ReportResults() error {
 	}
 
 	// Print the report to the terminal
-	slog.Info("Finished running statistics task on project \"" + s.globals.ProjectDir + "\"")
+	slog.Info("Finished running statistics task on project \"" + cmd.globals.ProjectDir + "\"")
 	fmt.Print(strings.Join(reportLines, "") + "\n")
 
 	// Append results to output file (text or CSV)
-	switch s.output.DetectFormat() {
+	switch cmd.output.DetectFormat() {
 
 	case filewriter.FormatTxt:
-		return s.output.Write(reportLines)
+		return cmd.output.Write(reportLines)
 
 	case filewriter.FormatCSV:
 		csvHeaders := []string{
-			"ProjectDir",
-			"TestCases",
-			"TestFiles",
-			"TotalFiles",
-			"TestLines",
-			"AvgLinesPerTest",
-			"PercentTestLines",
+			"projectDir",
+			"testCases",
+			"testFiles",
+			"totalFiles",
+			"testLines",
+			"avgLinesPerTest",
+			"percentTestLines",
 		}
 
 		row := []string{
-			s.globals.ProjectDir,
+			cmd.globals.ProjectDir,
 			fmt.Sprintf("%d", numTests),
-			fmt.Sprintf("%d", s.testFileCount),
-			fmt.Sprintf("%d", s.totalFileCount),
-			fmt.Sprintf("%d", s.totalTestLines),
+			fmt.Sprintf("%d", cmd.testFileCount),
+			fmt.Sprintf("%d", cmd.totalFileCount),
+			fmt.Sprintf("%d", cmd.totalTestLines),
 			fmt.Sprintf("%.1f", avgTestLines),
 			fmt.Sprintf("%.1f", percentTestLines),
 		}
 
-		return s.output.Write(row, csvHeaders)
+		return cmd.output.Write(row, csvHeaders)
 
 	default:
-		return fmt.Errorf("unsupported output format (file %q)", s.output.GetPath())
+		return fmt.Errorf("unsupported output format (file %q)", cmd.output.GetPath())
 	}
-
 }
 
-func (s *StatisticsCommand) Close() {
-	if s.output != nil {
-		s.output.Close()
+func (cmd *StatisticsCommand) Close() {
+	if cmd.output != nil {
+		cmd.output.Close()
 	}
 }

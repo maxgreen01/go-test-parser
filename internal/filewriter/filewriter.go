@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 )
@@ -68,6 +69,11 @@ func (writer *FileWriter) GetPath() string {
 	return writer.path
 }
 
+// Gets the parent directory of the output file path for this FileWriter instance in a thread-safe manner.
+func (writer *FileWriter) GetPathDir() string {
+	return filepath.Dir(writer.GetPath())
+}
+
 // Sets the output file path and format for this FileWriter instance in a thread-safe manner,
 // then opens the file and initializes related fields.
 // Prepends the default output directory (determined at runtime) if the provided path isn't absolute.
@@ -106,7 +112,7 @@ func (writer *FileWriter) SetPath(path string) error {
 	return nil
 }
 
-// Open the output file for writing, creating it if it doesn't exist and respecting the `append` flag.
+// Opens the output file for writing, creating it if it doesn't exist and respecting the `append` flag.
 // Also populates the `appender` field based on the detected file format.
 // This operation is not inherently thread-safe, and should be synchronized by the caller.
 func (writer *FileWriter) openFile() error {
@@ -149,11 +155,14 @@ func (writer *FileWriter) openFile() error {
 	return nil
 }
 
-// Write data to the file associated with this FileWriter instance, with file format automatically detected.
+// Writes data to the file associated with this FileWriter instance, with file format automatically detected.
 // The provided arguments will have different type and structure requirements depending on the file format:
 //   - For text files, `data` must be a string or []string where each element is a line of text, and `otherData` is ignored.
 //   - For CSV files, `data` must be a []string representing a single record with each string being a field, and
 //     `otherData[0]` must be a string[] representing CSV headers that will be written if the file is empty.
+//   - For JSON files, `data` is any value that can be marshaled to JSON, which will be appended to any existing data as an array.
+//     If `data` is a slice, `otherData[0]` must be a boolean indicating whether to flatten the slice elements
+//     (by one level, to avoid a nested array) if appending to any existing data.
 func (writer *FileWriter) Write(data any, otherData ...any) error {
 	if data == nil {
 		return nil // Nothing to write
@@ -164,7 +173,7 @@ func (writer *FileWriter) Write(data any, otherData ...any) error {
 	defer writer.mu.Unlock()
 
 	if writer.file == nil || writer.appender == nil {
-		return errors.New("cannot write data with uninitialized properties - call SetPath() first")
+		return errors.New("cannot write data to uninitialized FileWriter - call SetPath() first")
 	}
 
 	// Write the data to the file based on the detected format
@@ -177,7 +186,47 @@ func (writer *FileWriter) Write(data any, otherData ...any) error {
 	return nil
 }
 
-// Close the output file and any associated resources, or do nothing if they are already closed.
+// Writes each element of `data` (which must be a slice) as a separate item to the file associated with this FileWriter instance,
+// using the same logic as `Write` for each element. `otherData` is passed as-is to each underlying `Write` call.
+//
+// See Write for details on supported formats and argument conventions.
+//
+// Stops execution immediately on the first error encountered while writing any element.
+// todo maybe remove this entirely if it isn't clearly better than looping over `Write` (except the log messages)
+func (writer *FileWriter) WriteMultiple(data any, otherData ...any) error {
+	if data == nil {
+		return nil // Nothing to write
+	}
+
+	// Only allow one write operation at a time per FileWriter instance
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+
+	if writer.file == nil || writer.appender == nil {
+		return errors.New("cannot write data to uninitialized FileWriter - call SetPath() first")
+	}
+
+	// Ensure that the provided data is a slice
+	val := reflect.ValueOf(data)
+	if val.Kind() != reflect.Slice {
+		return fmt.Errorf("expected data as a slice for WriteMultiple, got %T", data)
+	}
+
+	// Write each element of the data to the file based on the detected format
+	for i := range val.Len() {
+		item := val.Index(i).Interface()
+
+		err := writer.appender.append(item, otherData...)
+		if err != nil {
+			return fmt.Errorf("writing data to output file %q (element %d): %w", writer.path, i, err)
+		}
+	}
+
+	slog.Info("Multiple pieces of data written successfully to file", "count", val.Len(), "outputPath", writer.path)
+	return nil
+}
+
+// Closes the output file and any associated resources, or do nothing if they are already closed.
 // Sets the `file` field to `nil` to indicate that the file is no longer open.
 // This should only be called when the FileWriter is no longer needed and all data has been written.
 func (writer *FileWriter) Close() {
@@ -207,10 +256,10 @@ func (writer *FileWriter) Close() {
 }
 
 //
-// =============== Utility functions ===============
+// =============== Utility Functions ===============
 //
 
-// Write some piece of data to a file (overwriting if it already exists),
+// Writes some piece of data to a file (overwriting if it already exists),
 // with the file format automatically detected based on the file extension.
 // This is a shortcut for creating a new FileWriter instance, writing to it, and closing it.
 func WriteToFile(path string, data any, otherData ...any) error {
@@ -229,7 +278,7 @@ func WriteToFile(path string, data any, otherData ...any) error {
 // Default directory name for output files, relative to the program root (which is determined at runtime).
 const defaultOutputDirName = "output"
 
-// Get the default output directory relative to the project root (determined at runtime)
+// Gets the default output directory relative to the project root (determined at runtime)
 func GetDefaultOutputDir() (string, error) {
 	root, err := getProgramRoot()
 	if err != nil {
@@ -238,8 +287,8 @@ func GetDefaultOutputDir() (string, error) {
 	return filepath.Join(root, defaultOutputDirName), nil
 }
 
-// If the provided path is not absolute, prepend the default output directory (determined at runtime) to it.
-// If the path is already absolute, return it unchanged.
+// If the provided path is not absolute, prepends the default output directory (determined at runtime) to it.
+// If the path is already absolute, returns it unchanged.
 func PrependDefaultOutputDir(path string) (string, error) { //todo maybe rename like PrepareFilePath with arg to create the dir (for use in `main`)
 	if filepath.IsAbs(path) {
 		return path, nil
@@ -252,10 +301,10 @@ func PrependDefaultOutputDir(path string) (string, error) { //todo maybe rename 
 	return filepath.Join(outputDir, path), nil
 }
 
-// Get the project root directory based on the executable path, or using the current working directory
+// Gets the project root directory based on the executable path, or using the current working directory
 // if the executable's directory is considered "bad" based on heuristics.
 //
-// Fall back to the current working directory if:
+// Falls back to the current working directory if:
 //   - exe is in a temp dir (was run via `go run`)
 //   - exe name starts with `__debug_bin` (is a `dlv` debugger binary)
 //   - exe is cached in the `GOCACHE` dir
@@ -294,7 +343,7 @@ func getProgramRoot() (string, error) {
 	return exeDir, nil
 }
 
-// Return the Go build cache directory by running 'go env GOCACHE'
+// Returns the Go build cache directory by running 'go env GOCACHE'
 func getGoBuildCacheDir() (string, error) {
 	cmd := exec.Command("go", "env", "GOCACHE")
 	result, err := cmd.Output()

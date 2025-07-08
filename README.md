@@ -42,7 +42,7 @@ To access the help menu and see all available options, run:
 The `statistics` command analyzes the Go test files in the specified project directory and generates various statistics related to the project's test cases. This includes metrics such as the total number of test cases, number of test files, average test length,
 and the percentage of the project comprised of test code (by lines).
 
-The final results of this command are well-suited for CSV format, especially if using the `splitByDir` option.
+Supports output to either `.txt` or `.csv` files. Output is especially well-suited for a `.csv` file if using the `splitByDir` option.
 
 Example:
 
@@ -52,14 +52,14 @@ Example:
 
 ### Analyze
 
-The `analyze` command performs a deeper analysis of the test cases in a project. This command identifies various structural elements in each test, with a focus on table-driven test indicators. The results of analyzing each test is saved in its own JSON file, which is not controlled by the `output` option.
+The `analyze` command performs a deeper analysis of the test cases in a project. This command identifies various structural elements in each test, with a focus on table-driven test indicators. The results of analyzing the tests are saved in their own JSON files, which are put in a new folder in the same directory as the `output` file. The JSON files are named like `<project>/<project>_<package>_<testcase>.json`.
 
-The final results of this command are well-suited for `.txt` format, as the focal point of this command's output are the JSON files generated for each test case.
+Supports output to either `.txt` or `.csv` files. Output is especially well-suited for a `.csv` file because it will contain a condensed version of the analysis results of every test case.
 
 Example:
 
 ```bash
-./go-test-parser analyze --project ./my-go-project --output ./output/analyze-report.txt
+./go-test-parser analyze --project ./my-go-project --output ./output/analyze-report.csv
 ```
 
 ## Contributing

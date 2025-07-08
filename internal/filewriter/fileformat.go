@@ -292,9 +292,10 @@ func (a *jsonAppender) append(data any, otherData ...any) error {
 	}
 
 	// Add the new object to the existing data as an array
-	if reflect.TypeOf(data).Kind() == reflect.Slice {
-		// If the data is a slice, check whether to flatten the elements before appending (not as a nested slice).
-		slice := reflect.ValueOf(data)
+
+	slice := reflect.ValueOf(data)
+	// If the data is a slice, check whether to flatten the elements before appending (not as a nested slice)
+	if slice.Kind() == reflect.Slice {
 		flatten, isBoolean := false, false
 		if len(otherData) > 0 {
 			if flag, ok := otherData[0].(bool); ok {
@@ -318,7 +319,7 @@ func (a *jsonAppender) append(data any, otherData ...any) error {
 			a.alreadyWritten = append(a.alreadyWritten, data)
 		}
 	} else {
-		// Non-slice data is appended as a single element
+		// Non-slice data is appended directly as a single element
 		a.alreadyWritten = append(a.alreadyWritten, data)
 	}
 

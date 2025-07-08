@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"log/slog"
 	"path/filepath"
+	"strings"
 
 	"github.com/maxgreen01/go-test-parser/internal/config"
 	"github.com/maxgreen01/go-test-parser/internal/filewriter"
@@ -26,7 +27,7 @@ type AnalyzeCommand struct {
 	output *filewriter.FileWriter
 
 	// Data fields
-	testCases []testcase.TestCase // list of actual test functions and related metadata
+	testCases []*testcase.TestCase // list of actual test functions and related metadata
 }
 
 // Command-line flags for the Analyze command specifically
@@ -38,19 +39,18 @@ var _ ParserCommand = (*AnalyzeCommand)(nil)
 
 // Register the command with the global flag parser
 func init() {
-	slog.Info("Registering analyze command")
 	RegisterCommand(func(flagParser *flags.Parser, opts *config.GlobalOptions) {
 		flagParser.AddCommand("statistics", "Collect statistics about a Go project's tests", "", NewStatisticsCommand(opts))
 	})
 }
 
-func (a *AnalyzeCommand) Name() string {
-	return "analyze"
-}
-
 // Create a new instance of the AnalyzeCommand using a reference to the global options.
 func NewAnalyzeCommand(globals *config.GlobalOptions) *AnalyzeCommand {
 	return &AnalyzeCommand{globals: globals}
+}
+
+func (cmd *AnalyzeCommand) Name() string {
+	return "analyze"
 }
 
 // Create a new instance of the AnalyzeCommand with the same initial state and flags, COPYING `globals`.
@@ -73,7 +73,7 @@ func (cmd *AnalyzeCommand) SetProjectDir(dir string) {
 // THIS SHOULD ONLY BE CALLED ONCE PER PROGRAM EXECUTION.
 func (cmd *AnalyzeCommand) Execute(args []string) error {
 	if cmd.globals.OutputPath == "" {
-		cmd.globals.OutputPath = "analyze_report.txt"
+		cmd.globals.OutputPath = "analyze_report.csv"
 	}
 	// Initialize the output writer with the specified output path
 	writer, err := filewriter.NewFileWriter(cmd.globals.OutputPath, cmd.globals.AppendOutput)
@@ -86,8 +86,8 @@ func (cmd *AnalyzeCommand) Execute(args []string) error {
 	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir, cmd.globals.Threads)
 }
 
-func (a *AnalyzeCommand) Visit(fset *token.FileSet, file *ast.File) {
-	projectName := filepath.Base(a.globals.ProjectDir)
+func (cmd *AnalyzeCommand) Visit(fset *token.FileSet, file *ast.File) {
+	projectName := filepath.Base(cmd.globals.ProjectDir)
 	// packageName := file.Name.Name
 	// fileName := fset.Position(file.Pos()).Filename
 
@@ -107,27 +107,65 @@ func (a *AnalyzeCommand) Visit(fset *token.FileSet, file *ast.File) {
 			continue
 		}
 		tc := testcase.CreateTestCase(fn, file, fset, projectName)
-		tc.Analyze()
+		cmd.testCases = append(cmd.testCases, &tc)
 
-		a.testCases = append(a.testCases, tc)
-	}
-}
-
-func (a *AnalyzeCommand) ReportResults() error {
-	slog.Info("Analysis complete", "testCases", len(a.testCases))
-
-	for _, tc := range a.testCases {
-		err := tc.SaveAsJSON()
+		// Analyze the test case and save it immediately
+		testcase.Analyze(&tc)
+		err := tc.SaveAsJSON(cmd.output.GetPathDir())
 		if err != nil {
-			return fmt.Errorf("saving test case %q as JSON: %w", tc.Name, err)
+			slog.Error("saving test case as JSON", "name", tc.Name, "err", err)
 		}
 	}
-
-	return nil
 }
 
-func (a *AnalyzeCommand) Close() {
-	if a.output != nil {
-		a.output.Close()
+func (cmd *AnalyzeCommand) ReportResults() error {
+	// Format output for printing the report to the terminal (and potentially writing to a text file)
+
+	reportLines := []string{
+		fmt.Sprintf("\n=============  Analysis Report for %q:  =============\n\n", cmd.globals.ProjectDir),
+	}
+
+	numTests := len(cmd.testCases)
+
+	if numTests == 0 {
+		reportLines = append(reportLines, "No test cases found in the specified project.\n\n")
+	} else {
+		reportLines = append(reportLines,
+			fmt.Sprintf("Number of test cases: %d\n", numTests),
+			"\n",
+			// todo maybe put more here
+		)
+	}
+
+	// Print the report to the terminal
+	slog.Info("Finished running analysis task on project \"" + cmd.globals.ProjectDir + "\"")
+	fmt.Print(strings.Join(reportLines, "") + "\n")
+
+	// Append results to output file (text or CSV)
+	switch cmd.output.DetectFormat() {
+
+	case filewriter.FormatTxt:
+		return cmd.output.Write(reportLines)
+
+	case filewriter.FormatCSV:
+		if numTests == 0 {
+			return nil
+		}
+
+		// Save a condensed version of each analyzed test case
+		rows := make([][]string, 0, numTests)
+		for _, tc := range cmd.testCases {
+			rows = append(rows, tc.EncodeAsCSV())
+		}
+		return cmd.output.WriteMultiple(rows, cmd.testCases[0].GetCSVHeaders())
+
+	default:
+		return fmt.Errorf("unsupported output format (file %q)", cmd.output.GetPath())
+	}
+}
+
+func (cmd *AnalyzeCommand) Close() {
+	if cmd.output != nil {
+		cmd.output.Close()
 	}
 }

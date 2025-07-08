@@ -172,8 +172,8 @@ func applyGlobals(opts *config.GlobalOptions) {
 	if dirErr != nil {
 		fmt.Fprintf(os.Stderr, "Could not determine default output directory for logs: %v\n", dirErr)
 	} else {
-		logFilePath := filepath.Join(outputDir, "testparser.log")
-		logFile, fileErr := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		logFilePath := filepath.Join(outputDir, "testparser.log") // todo maybe use a time-based filename so multiple logs can be saved
+		logFile, fileErr := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 
 		if fileErr != nil {
 			fmt.Fprintf(os.Stderr, "Could not open log file %q: %v\n", logFilePath, fileErr)

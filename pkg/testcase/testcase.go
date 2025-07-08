@@ -10,6 +10,7 @@ import (
 	"go/printer"
 	"go/token"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
 	"github.com/maxgreen01/go-test-parser/internal/filewriter"
@@ -169,129 +170,49 @@ func (t TestCase) NumLines() int {
 	return end.Line - start.Line + 1
 }
 
-// Extract relevant information about this TestCase and save the results into its own corresponding fields
-func (t *TestCase) Analyze() {
-	// Analyze the individual statements in the test case
-	stmts := t.GetStatements()
-
-	t.parsedStatements = make([]string, len(stmts))
-	t.tableDrivenType = "none" // Default value if no table-driven test information is detected
-	var foundTableType, foundLoop bool
-	for i, stmt := range stmts {
-		// Stringify the entire statement
-		t.parsedStatements[i] = nodeToString(stmt, t.fset)
-
-		// Helper function for saving data if a statement is a struct or map, returning whether a struct or map was found
-		// todo do more processing to extract specific data based on the type of literal
-		detectTableDrivenType := func(expr ast.Expr) bool {
-			if _, ok := expr.(*ast.StructType); ok {
-				slog.Debug("Found struct definition in test case", "test", t.Name)
-				t.tableDrivenType = "struct"
-				foundTableType = true
-
-			} else if _, ok := expr.(*ast.MapType); ok {
-				slog.Debug("Found map definition in test case", "test", t.Name)
-				t.tableDrivenType = "map"
-				foundTableType = true
-			}
-			return foundTableType
-		}
-
-		// Extract struct or map declarations or assignments anywhere inside the function.
-		// These are typically either inside a DeclStmt, AssignStmt, or RangeStmt as setup for table-driven tests
-		if !foundTableType {
-			ast.Inspect(stmt, func(n ast.Node) bool {
-				// Check if this is a struct or map definition
-				if genDecl, ok := n.(*ast.GenDecl); ok {
-					for _, spec := range genDecl.Specs {
-						if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-							if found := detectTableDrivenType(typeSpec.Type); found {
-								return false
-							}
-						}
-					}
-				}
-
-				// Check if this is a struct or map literal
-				if compositeLit, ok := n.(*ast.CompositeLit); ok {
-					// Struct literal is expected to be a slice
-					if arrStmt, ok := compositeLit.Type.(*ast.ArrayType); ok {
-						if found := detectTableDrivenType(arrStmt.Elt); found {
-							return false
-						}
-
-						// Map literal is expected to be standalone
-					} else if found := detectTableDrivenType(compositeLit.Type); found {
-						return false
-					}
-				}
-
-				return true // Keep checking children nodes
-			})
-		}
-
-		// Extract the loop that runs the subtests
-		if !foundLoop {
-			// Helper func for detecting t.Run() calls inside a loop body
-			detectTRun := func(block *ast.BlockStmt) {
-				for _, stmt := range block.List {
-					if exprStmt, ok := stmt.(*ast.ExprStmt); ok {
-						if callExpr, ok := exprStmt.X.(*ast.CallExpr); ok {
-							if selExpr, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
-								if ident, ok := selExpr.X.(*ast.Ident); ok && ident.Name == "t" && selExpr.Sel.Name == "Run" {
-									t.tableDrivenType += ", using t.Run()"
-								}
-							}
-						}
-					}
-				}
-			}
-
-			if rangeStmt, ok := stmt.(*ast.RangeStmt); ok {
-				slog.Debug("Found range statement in test case", "test", t.Name)
-				t.tableDrivenType += ", with range loop"
-				foundLoop = true
-				detectTRun(rangeStmt.Body)
-
-			} else if forStmt, ok := stmt.(*ast.ForStmt); ok {
-				slog.Debug("Found loop statement in test case", "test", t.Name)
-				t.tableDrivenType += ", with for loop"
-				foundLoop = true
-				detectTRun(forStmt.Body)
-			}
-		}
-
-		// todo do more work here to classify statements
-	}
-
-	// Assign default values if table-driven test information was not detected
-	if !foundLoop {
-		t.tableDrivenType += ", no loop"
-	}
-
-	// Extract imported packages from the file's AST
-
-	var imports []*ast.ImportSpec
-	if t.File != nil {
-		imports = t.File.Imports
-	} else {
-		slog.Warn("Cannot extract imported packages in test case because File is nil", "testCase", t.Name)
-	}
-	for _, imp := range imports {
-		t.importedPackages = append(t.importedPackages, strings.Trim(imp.Path.Value, "\""))
-	}
-}
+//
+// =============== Output Methods ===============
+//
 
 // Return a string representation of the TestCase for logging and debugging purposes
 func (t TestCase) String() string {
 	return fmt.Sprintf("TestCase{Name: %s, Package: %s, FileName: %s, Project: %s, NumStatements: %d}", t.Name, t.Package, t.FileName, t.Project, t.NumStatements())
 }
 
-// Save the TestCase as JSON to a file named like `<project>/<project>_<package>_<testcase>.json` in the output directory
-func (t TestCase) SaveAsJSON() error {
+// Return the headers for the CSV representation of the TestCase
+// Complex or large fields are excluded for the sake of brevity.
+func (t TestCase) GetCSVHeaders() []string {
+	return []string{
+		"project",
+		"filename",
+		"package",
+		"name",
+		"tableDrivenType",
+		"importedPackages",
+	}
+}
+
+// Encode TestCase as a CSV row, returning the encoded data corresponding to the headers in `GetCSVHeaders`.
+func (t TestCase) EncodeAsCSV() []string {
+	return []string{
+		t.Project,
+		t.FileName,
+		t.Package,
+		t.Name,
+		t.tableDrivenType,
+		strings.Join(t.importedPackages, ", "),
+	}
+}
+
+// Save the TestCase as JSON to a file named like `<project>/<project>_<package>_<testcase>.json` in the specified directory (or the output directory if not specified).
+func (t TestCase) SaveAsJSON(dir string) error {
 	slog.Info("Saving test case as JSON", "testCase", t)
 
-	path := fmt.Sprintf("%s/%s_%s_%s.json", t.Project, t.Project, t.Package, t.Name) // save data as JSON
+	// Construct the filepath using information from the test case, inside the provided directory.
+	// If the directory is empty, the `filewriter` will automatically prepend the output directory instead.
+	path := filepath.Join(dir, t.Project, fmt.Sprintf("%s_%s_%s.json", t.Project, t.Package, t.Name))
+
+	// Create and write the file
 	err := filewriter.WriteToFile(path, t)
 	if err != nil {
 		return fmt.Errorf("saving test case %q as JSON: %w", t.Name, err)
