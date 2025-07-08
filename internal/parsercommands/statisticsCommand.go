@@ -1,4 +1,4 @@
-package commands
+package parsercommands
 
 import (
 	"fmt"
@@ -16,7 +16,6 @@ import (
 	"github.com/jessevdk/go-flags"
 )
 
-// todo maybe make a custom interface for representing this combination
 // Implementation of both the Parser Task interface and the Flags package's Commander interface.
 // Stores input flags for the task, as well as fields representing the data to be collected.
 type StatisticsCommand struct {
@@ -40,9 +39,16 @@ type StatisticsCommand struct {
 type statisticsOptions struct {
 }
 
-// Compile-time interface implementation checks
-var _ parser.Task = (*StatisticsCommand)(nil)
-var _ flags.Commander = (*StatisticsCommand)(nil)
+// Compile-time interface implementation check
+var _ ParserCommand = (*StatisticsCommand)(nil)
+
+// Register the command with the global flag parser
+func init() {
+	slog.Info("Registering statistics command")
+	RegisterCommand(func(flagParser *flags.Parser, opts *config.GlobalOptions) {
+		flagParser.AddCommand("analyze", "Analyze a Go projects' tests", "", NewAnalyzeCommand(opts))
+	})
+}
 
 func (s *StatisticsCommand) Name() string {
 	return "statistics"

@@ -1,4 +1,4 @@
-package commands
+package parsercommands
 
 import (
 	"fmt"
@@ -33,9 +33,16 @@ type AnalyzeCommand struct {
 type analyzeOptions struct {
 }
 
-// Compile-time interface implementation checks
-var _ parser.Task = (*AnalyzeCommand)(nil)
-var _ flags.Commander = (*AnalyzeCommand)(nil)
+// Compile-time interface implementation check
+var _ ParserCommand = (*AnalyzeCommand)(nil)
+
+// Register the command with the global flag parser
+func init() {
+	slog.Info("Registering analyze command")
+	RegisterCommand(func(flagParser *flags.Parser, opts *config.GlobalOptions) {
+		flagParser.AddCommand("statistics", "Collect statistics about a Go project's tests", "", NewStatisticsCommand(opts))
+	})
+}
 
 func (a *AnalyzeCommand) Name() string {
 	return "analyze"

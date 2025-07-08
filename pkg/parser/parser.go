@@ -198,7 +198,7 @@ func parseDir(ctx context.Context, task Task, dir string) error {
 
 			// Skip files in `vendor/` directory
 			if strings.Contains(filePath, filepath.Join("vendor", "")) {
-				slog.Info("Skipping vendored file", "file", filePath)
+				slog.Debug("Skipping vendored file", "file", filePath)
 				continue
 			}
 

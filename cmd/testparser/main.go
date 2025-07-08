@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/maxgreen01/go-test-parser/internal/commands"
 	"github.com/maxgreen01/go-test-parser/internal/config"
 	"github.com/maxgreen01/go-test-parser/internal/filewriter"
+	"github.com/maxgreen01/go-test-parser/internal/parsercommands"
 	"github.com/maxgreen01/go-test-parser/pkg/parser"
 
 	"github.com/jessevdk/go-flags"
@@ -21,17 +21,17 @@ import (
 )
 
 // =========== Global command-line flag definitions ===========
-type GlobalOptions = config.GlobalOptions
 
 // =========== Parse command-line flags and initialize the application ===========
 func main() {
 	// Create the flag parser itself
-	var opts GlobalOptions
+	var opts config.GlobalOptions
 	flagParser := flags.NewParser(&opts, flags.Default|flags.AllowBoolValues)
 
-	// Add commands for each Task
-	flagParser.AddCommand("statistics", "Collect statistics about a Go project's tests", "", commands.NewStatisticsCommand(&opts))
-	flagParser.AddCommand("analyze", "Analyze a Go projects' tests", "", commands.NewAnalyzeCommand(&opts))
+	// Dynamically add commands from the registry
+	for _, registerFunc := range parsercommands.CommandRegistry {
+		registerFunc(flagParser, &opts)
+	}
 
 	// Set up a hook to validate and apply global flags before executing any command.
 	// Also handles logic for after the command finishes executing using `defer`.
@@ -79,7 +79,7 @@ func main() {
 }
 
 // Validate (in-place) and apply global flags such as logging level and color output
-func applyGlobals(opts *GlobalOptions) {
+func applyGlobals(opts *config.GlobalOptions) {
 	//
 	// =========== Validate flag values ===========
 	//

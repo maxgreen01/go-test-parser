@@ -2,6 +2,8 @@
 // To synchronize multiple places that can write to the same file, pass around a reference to the same `FileWriter` instance.
 package filewriter
 
+// todo consider making this its own module if it gets large enough
+
 import (
 	"errors"
 	"fmt"
@@ -12,8 +14,6 @@ import (
 	"strings"
 	"sync"
 )
-
-// todo maybe add util functions for quickly opening/closing a file and writing a single piece of data (especially JSON)
 
 // Provides a simple, thread-safe way to write data to files in different formats.
 // File format is automatically detected based on the file extension.
