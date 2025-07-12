@@ -1,4 +1,4 @@
-// Provides functionality for analyzing and storing test cases extracted from Go source files.
+// Provides functionality for storing and analyzing test cases extracted from Go source files.
 package testcase
 
 import (
@@ -9,62 +9,87 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"go/types"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 
+	"github.com/aaronriekenberg/gsm"
 	"github.com/maxgreen01/go-test-parser/internal/filewriter"
 )
 
-// Represents an individual test case defined at the top level of a Go source file
+// Represents an individual test case defined at the top level of a Go source file.
+// The fields of this struct should not be modified directly.
 type TestCase struct {
 	// High-level identifiers for the test case
 	Name     string // the name of the test case
 	Package  string // the fully qualified package name where the test case is defined
-	FileName string // the name of the file where the test case is defined
+	FilePath string // the path to the file where the test case is defined
 	Project  string // the overarching project directory that the test case's package is part of
 
-	// Analysis results
-	tableDrivenType  string   // the type of table-driven test, if applicable (e.g., "struct, with loop", "map, no loop", "none, no loop") //todo convert this into a struct that stringifies later
-	parsedStatements []string // the parsed statements in the test case, as strings
-	// subtests         []subTest // the list of subtests defined in this test case, if any
-	importedPackages []string // the list of imported packages in the test case's file
+	// Analysis results - only available after running `Analyze(testCase)`
+	// todo maybe make this all into its own struct like AnalysisResults that references this struct? alternatively, store the struct in this object and call `Analyze()` by default unless a bool is passed to `CreateTestCase`
+	ScenarioSet      *ScenarioSet // the set of scenarios defined in this test case, if it is table-driven
+	ParsedStatements []string     // the parsed statements in the test case, as strings
+	ImportedPackages []string     // the list of imported packages in the test case's file
 
 	// Actual syntax data
-	FuncDecl *ast.FuncDecl  // the actual declaration of the test case
-	File     *ast.File      // the actual file where the test case is defined (for context, e.g. imports)
-	fset     *token.FileSet // the file set used when parsing this project - needed for position information
+	FuncDecl *ast.FuncDecl // the actual declaration of the test case
+	File     *ast.File     // the actual file where the test case is defined (for context, e.g. imports)
 }
 
-// Represents a subtest defined within a test case, for use in table-driven tests
-type subTest struct {
-	Name       string            // the name of the subtest, if any //todo how to detect?
-	Definition *ast.CompositeLit // the actual literal that defines the subtest structure and values (expected to be either a struct or map)
-	Runner     *ast.BlockStmt    // the actual code that runs the subtest (expected to be the body of a loop)
+// Store `fset` (as `*token.FileSet`) and `typeInfo` (as `*types.Info`) data in thread-safe maps so they don't have to be stored in the TestCase struct.
+// `fset` is the fileset used when parsing a project, and is needed for position information.
+// `typeInfo` is the type information for a particular package, and is used for type checking during analysis.
+// `fset` changes based on which overarching project is being parsed, and `typeInfo` is specific to each individual package.
+var (
+	fsetStore     gsm.GenericSyncMap[string, *token.FileSet]  // keys are PROJECT names
+	typeInfoStore gsm.GenericSyncMap[*ast.Ident, *types.Info] // keys are PACKAGE identifiers
+)
+
+// Convenience method for getting the type of an expression (including identifiers) within the current TestCase's project.
+// Returns `nil` if the type information for the project is not available, or if the expression is not found.
+func (tc *TestCase) TypeOf(expr ast.Expr) types.Type {
+	if tc.File == nil {
+		return nil
+	}
+	typeInfo, ok := typeInfoStore.Load(tc.File.Name)
+	if !ok {
+		return nil
+	}
+	// Attempt to resolve the type
+	return typeInfo.TypeOf(expr)
 }
 
-// Define a printer config for converting AST nodes to string representations
-var printerCfg = &printer.Config{
-	Mode:     printer.UseSpaces | printer.TabIndent,
-	Tabwidth: 4,
+// Convenience method for getting the FileSet corresponding to this TestCase's project.
+// The boolean result indicates whether the FileSet was successfully retrieved.
+func (tc *TestCase) Fset() (*token.FileSet, bool) {
+	return fsetStore.Load(tc.Project)
 }
 
-// Create a new TestCase struct for storage
-func CreateTestCase(funcDecl *ast.FuncDecl, file *ast.File, fset *token.FileSet, project string) TestCase {
-	if funcDecl == nil || file == nil || fset == nil {
-		slog.Error("Cannot create TestCase with nil syntax data", "funcDecl", funcDecl, "file", file, "fset", fset)
+// Create a new TestCase struct for storage and analysis
+func CreateTestCase(funcDecl *ast.FuncDecl, file *ast.File, project string, fset *token.FileSet, typeInfo *types.Info) TestCase {
+	if funcDecl == nil || file == nil || fset == nil || typeInfo == nil {
+		slog.Error("Cannot create TestCase with nil syntax or type data", "funcDecl", funcDecl, "file", file, "project", project, "fset", fset, "typeInfo", typeInfo)
 		return TestCase{}
 	}
 
+	// Save the `fset` and `typeInfo` in the thread-safe maps for later retrieval (if they don't already exist)
+	fsetStore.LoadOrStore(project, fset)
+	typeInfoStore.LoadOrStore(file.Name, typeInfo)
+
+	// Create the TestCase itself
 	return TestCase{
 		Name:     funcDecl.Name.Name,
 		Package:  file.Name.Name,
-		FileName: fset.Position(funcDecl.Pos()).Filename,
+		FilePath: fset.Position(funcDecl.Pos()).Filename,
 		Project:  project,
+
+		// Analysis results are empty by default
 
 		FuncDecl: funcDecl,
 		File:     file,
-		fset:     fset,
 	}
 }
 
@@ -146,27 +171,28 @@ func IsValidTestCase(funcDecl *ast.FuncDecl) (valid bool, badFormat bool) {
 }
 
 // Return the list of statements in this test case
-func (t *TestCase) GetStatements() []ast.Stmt {
-	if t.FuncDecl == nil || t.FuncDecl.Body == nil {
-		slog.Warn("Cannot get statements from test case because FuncDecl or its body is nil", "testCase", t.Name)
+func (tc *TestCase) GetStatements() []ast.Stmt {
+	if tc.FuncDecl == nil || tc.FuncDecl.Body == nil {
+		slog.Warn("Cannot get statements from test case because FuncDecl or its body is nil", "testCase", tc.Name)
 		return nil
 	}
-	return t.FuncDecl.Body.List
+	return tc.FuncDecl.Body.List
 }
 
 // Return the number of statements in the test case
-func (t TestCase) NumStatements() int {
-	return len(t.GetStatements())
+func (tc *TestCase) NumStatements() int {
+	return len(tc.GetStatements())
 }
 
 // Return the number of individual lines (not statements) that the test case spans
-func (t TestCase) NumLines() int {
-	if t.FuncDecl == nil || t.fset == nil {
-		slog.Warn("Cannot determine number of lines in test case because FuncDecl or fset is nil", "testCase", t.Name)
+func (tc *TestCase) NumLines() int {
+	fset, fsetOk := tc.Fset()
+	if tc.FuncDecl == nil || !fsetOk {
+		slog.Warn("Cannot determine number of lines in test case because FuncDecl or fset is nil", "testCase", tc.Name)
 		return -1
 	}
-	start := t.fset.Position(t.FuncDecl.Pos())
-	end := t.fset.Position(t.FuncDecl.End())
+	start := fset.Position(tc.FuncDecl.Pos())
+	end := fset.Position(tc.FuncDecl.End())
 	return end.Line - start.Line + 1
 }
 
@@ -175,47 +201,47 @@ func (t TestCase) NumLines() int {
 //
 
 // Return a string representation of the TestCase for logging and debugging purposes
-func (t TestCase) String() string {
-	return fmt.Sprintf("TestCase{Name: %s, Package: %s, FileName: %s, Project: %s, NumStatements: %d}", t.Name, t.Package, t.FileName, t.Project, t.NumStatements())
+func (tc *TestCase) String() string {
+	return fmt.Sprintf("TestCase{Name: %s, Package: %s, FileName: %s, Project: %s, NumStatements: %d}", tc.Name, tc.Package, tc.FilePath, tc.Project, tc.NumStatements())
 }
 
 // Return the headers for the CSV representation of the TestCase
 // Complex or large fields are excluded for the sake of brevity.
-func (t TestCase) GetCSVHeaders() []string {
+func (tc *TestCase) GetCSVHeaders() []string {
 	return []string{
 		"project",
 		"filename",
 		"package",
 		"name",
-		"tableDrivenType",
+		"tableDrivenDataStructure",
 		"importedPackages",
 	}
 }
 
 // Encode TestCase as a CSV row, returning the encoded data corresponding to the headers in `GetCSVHeaders`.
-func (t TestCase) EncodeAsCSV() []string {
+func (tc *TestCase) EncodeAsCSV() []string {
 	return []string{
-		t.Project,
-		t.FileName,
-		t.Package,
-		t.Name,
-		t.tableDrivenType,
-		strings.Join(t.importedPackages, ", "),
+		tc.Project,
+		tc.FilePath,
+		tc.Package,
+		tc.Name,
+		tc.ScenarioSet.DataStructure.String(),
+		strings.Join(tc.ImportedPackages, ", "),
 	}
 }
 
 // Save the TestCase as JSON to a file named like `<project>/<project>_<package>_<testcase>.json` in the specified directory (or the output directory if not specified).
-func (t TestCase) SaveAsJSON(dir string) error {
-	slog.Info("Saving test case as JSON", "testCase", t)
+func (tc *TestCase) SaveAsJSON(dir string) error {
+	slog.Info("Saving test case as JSON", "testCase", tc)
 
 	// Construct the filepath using information from the test case, inside the provided directory.
 	// If the directory is empty, the `filewriter` will automatically prepend the output directory instead.
-	path := filepath.Join(dir, t.Project, fmt.Sprintf("%s_%s_%s.json", t.Project, t.Package, t.Name))
+	path := filepath.Join(dir, tc.Project, fmt.Sprintf("%s_%s_%s.json", tc.Project, tc.Package, tc.Name))
 
 	// Create and write the file
-	err := filewriter.WriteToFile(path, t)
+	err := filewriter.WriteToFile(path, tc)
 	if err != nil {
-		return fmt.Errorf("saving test case %q as JSON: %w", t.Name, err)
+		return fmt.Errorf("saving test case %q as JSON: %w", tc.Name, err)
 	}
 
 	slog.Info("Saved test case as JSON", "filePath", path)
@@ -227,36 +253,41 @@ func (t TestCase) SaveAsJSON(dir string) error {
 type testCaseJSON struct {
 	Name     string `json:"name"`
 	Package  string `json:"package"`
-	FileName string `json:"filename"`
+	FilePath string `json:"filePath"`
 	Project  string `json:"project"`
 
-	TableDrivenType  string   `json:"tableDrivenType"`
-	ParsedStatements []string `json:"parsedStatements"`
-	ImportedPackages []string `json:"importedPackages"`
+	ScenarioSet      *ScenarioSet `json:"scenarioSet"`
+	ParsedStatements []string     `json:"parsedStatements"`
+	ImportedPackages []string     `json:"importedPackages"`
 
 	FuncDecl string `json:"funcDecl"`
-	// File and fset are not saved
+	// File is not saved
 }
 
 // Marshal the TestCase for JSON output
-func (t TestCase) MarshalJSON() ([]byte, error) {
-	out := testCaseJSON{
-		Name:     t.Name,
-		Package:  t.Package,
-		FileName: t.FileName,
-		Project:  t.Project,
-
-		TableDrivenType:  t.tableDrivenType,
-		ParsedStatements: t.parsedStatements,
-		ImportedPackages: t.importedPackages,
-
-		FuncDecl: nodeToString(t.FuncDecl, t.fset),
+func (tc *TestCase) MarshalJSON() ([]byte, error) {
+	fset, ok := tc.Fset()
+	if !ok {
+		slog.Error("Failed to find FileSet for project", "project", tc.Project)
+		return nil, fmt.Errorf("could not find FileSet for project %q", tc.Project)
 	}
-	return json.Marshal(out)
+	return json.Marshal(testCaseJSON{
+		Name:     tc.Name,
+		Package:  tc.Package,
+		FilePath: tc.FilePath,
+		Project:  tc.Project,
+
+		ScenarioSet:      tc.ScenarioSet,
+		ParsedStatements: tc.ParsedStatements,
+		ImportedPackages: tc.ImportedPackages,
+
+		FuncDecl: nodeToString(tc.FuncDecl, fset),
+	})
 }
 
 // Unmarshal the TestCase from JSON
-func (t *TestCase) UnmarshalJSON(data []byte) error {
+// todo maybe remove this because it probably doesn't decode properly
+func (tc *TestCase) UnmarshalJSON(data []byte) error {
 	var aux testCaseJSON
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -278,30 +309,41 @@ func (t *TestCase) UnmarshalJSON(data []byte) error {
 	}
 
 	// Save data into the main struct
-	*t = TestCase{
+	*tc = TestCase{
 		Name:     aux.Name,
 		Package:  aux.Package,
-		FileName: aux.FileName,
+		FilePath: aux.FilePath,
 		Project:  aux.Project,
 
-		tableDrivenType:  aux.TableDrivenType,
-		parsedStatements: aux.ParsedStatements,
-		importedPackages: aux.ImportedPackages,
+		ScenarioSet:      aux.ScenarioSet,
+		ParsedStatements: aux.ParsedStatements,
+		ImportedPackages: aux.ImportedPackages,
 
 		FuncDecl: funcDecl,
-		// File and fset cannot be restored from JSON because they aren't saved
+		// File cannot be restored from JSON because it isn't saved
 	}
 	return nil
 }
 
-// todo maybe move these to an internal utils package
-// Convert an AST node to a string representation using `go/printer`, or return "ERROR" if formatting fails
+// todo maybe move these functions to an internal AST utils package
+// Define a printer config for converting AST nodes to string representations
+var printerCfg = &printer.Config{
+	Mode:     printer.UseSpaces | printer.TabIndent,
+	Tabwidth: 4,
+}
+
+// Convert an AST node to a string representation using `go/printer`, or return an error string if formatting fails
+// todo maybe return actual errors
 func nodeToString(node ast.Node, fset *token.FileSet) string {
+	if node == nil || reflect.ValueOf(node).IsNil() {
+		return ""
+	}
+
 	var buf bytes.Buffer
 	err := printerCfg.Fprint(&buf, fset, node)
 	if err != nil {
 		slog.Error("Failed to format AST node", "error", err, "nodeType", fmt.Sprintf("%T", node))
-		return "ERROR" //todo maybe make this an actual error
+		return "Failed to format AST node: " + err.Error()
 	}
 
 	return buf.String()
@@ -311,9 +353,9 @@ func nodeToString(node ast.Node, fset *token.FileSet) string {
 // This function tries to parse the string as a declaration, statement, or expression in that order.
 func stringToNode(str string) (ast.Node, error) {
 	// First try parsing the string as a declaration by treating the string as a Go source file
-	fset := token.NewFileSet()
+	dummyFset := token.NewFileSet()
 	fileStr := "package dummy\n" + str
-	file, err := parser.ParseFile(fset, "", fileStr, parser.ParseComments)
+	file, err := parser.ParseFile(dummyFset, "", fileStr, parser.ParseComments)
 	if err == nil {
 		// Extract and return the first declaration in the file
 		if len(file.Decls) > 0 {
@@ -324,7 +366,7 @@ func stringToNode(str string) (ast.Node, error) {
 
 	// Try parsing the string as a statement by wrapping the string in a function
 	funcStr := "package dummy\nfunc dummyFunc() {\n" + str + "\n}"
-	file, err = parser.ParseFile(fset, "", funcStr, parser.ParseComments)
+	file, err = parser.ParseFile(dummyFset, "", funcStr, parser.ParseComments)
 	if err == nil {
 		// Extract and return the first statement in the function body
 		if len(file.Decls) > 0 {
@@ -345,4 +387,18 @@ func stringToNode(str string) (ast.Node, error) {
 	}
 
 	return nil, fmt.Errorf("failed to parse node string %q: %w", str, err)
+}
+
+// Returns a boolean indicating whether a statement is a function call expression of the form `owner.name(...)`.
+func IsSelectorFuncCall(stmt ast.Stmt, owner, name string) bool {
+	if exprStmt, ok := stmt.(*ast.ExprStmt); ok {
+		if callExpr, ok := exprStmt.X.(*ast.CallExpr); ok {
+			if selExpr, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
+				if ident, ok := selExpr.X.(*ast.Ident); ok && ident.Name == owner && selExpr.Sel.Name == name {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

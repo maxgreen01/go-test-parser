@@ -289,7 +289,8 @@ func GetDefaultOutputDir() (string, error) {
 
 // If the provided path is not absolute, prepends the default output directory (determined at runtime) to it.
 // If the path is already absolute, returns it unchanged.
-func PrependDefaultOutputDir(path string) (string, error) { //todo maybe rename like PrepareFilePath with arg to create the dir (for use in `main`)
+// todo maybe rename to something like like PrepareFilePath with arg to create the dir (for use in `main`)
+func PrependDefaultOutputDir(path string) (string, error) {
 	if filepath.IsAbs(path) {
 		return path, nil
 	}

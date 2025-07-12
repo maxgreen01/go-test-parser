@@ -29,7 +29,7 @@ const (
 
 // Determine a file's format based on file extension.
 // Returns FormatUnknown if the file extension is not recognized or not supported.
-// todo consider making this more robust, maybe with a dynamic String() method
+// todo consider making this more robust, maybe with a registry and/or dynamic String() method
 func DetectFormat(path string) FileFormat {
 	switch ext := strings.ToLower(filepath.Ext(path)); ext {
 	case ".txt":

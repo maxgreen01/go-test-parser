@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"go/types"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -24,7 +25,7 @@ type Task interface {
 	Name() string
 
 	// Function called on every Go source file in the project, which may modify local state to save results
-	Visit(fset *token.FileSet, file *ast.File)
+	Visit(file *ast.File, fset *token.FileSet, typeInfo *types.Info)
 
 	// Create a new instance of the task with the same initial state and flags.
 	// Used to ensure that each parsed directory can have an independent output.
@@ -129,6 +130,7 @@ func Parse(t Task, rootDir string, splitByDir bool, threads int) error {
 
 // Iterates over all Go source files in the specified directory and runs the provided task on each file.
 // After processing all files, calls the task's ReportResults method to output any accumulated results.
+// todo make this multithreaded even without `splitByDir` somehow?
 func parseDir(ctx context.Context, task Task, dir string) error {
 	// Check for cancellation before starting
 	select {
@@ -210,7 +212,7 @@ func parseDir(ctx context.Context, task Task, dir string) error {
 
 			// Actually process the file
 			// slog.Debug("Processing file", "package", pkg.Name, "file", filePath)
-			task.Visit(fset, file)
+			task.Visit(file, fset, pkg.TypesInfo)
 		}
 	}
 

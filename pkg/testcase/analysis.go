@@ -2,119 +2,210 @@ package testcase
 
 import (
 	"go/ast"
+	"go/token"
+	"go/types"
 	"log/slog"
+	"slices"
 	"strings"
 )
 
-// Extract relevant information about this TestCase and save the results into its own corresponding fields
-func Analyze(t *TestCase) {
-	// Analyze the individual statements in the test case
-	stmts := t.GetStatements()
+// Populates the TestCase's ScenarioSet field using the information extracted from from the test's statements
+func (tc *TestCase) IdentifyScenarioSet(stmts []ast.Stmt) {
+	if len(stmts) == 0 {
+		slog.Warn("Cannot identify ScenarioSet in TestCase because there are no statements", "testCase", tc.Name)
+		return
+	}
 
-	t.parsedStatements = make([]string, len(stmts))
-	t.tableDrivenType = "none" // Default value if no table-driven test information is detected
-	var foundTableType, foundLoop bool
-	for i, stmt := range stmts {
-		// Stringify the entire statement
-		t.parsedStatements[i] = nodeToString(stmt, t.fset)
+	// Reset the TestCase's ScenarioSet (which should be empty anyway), which will be populated over time with the relevant data
+	tc.ScenarioSet = &ScenarioSet{}
+	ss := tc.ScenarioSet
 
-		// Helper function for saving data if a statement is a struct or map, returning whether a struct or map was found
-		// todo do more processing to extract specific data based on the type of literal
-		detectTableDrivenType := func(expr ast.Expr) bool {
-			if _, ok := expr.(*ast.StructType); ok {
-				slog.Debug("Found struct definition in test case", "test", t.Name)
-				t.tableDrivenType = "struct"
-				foundTableType = true
+	fset, _ := tc.Fset() //todo find a better way
+	ss.fset = &fset
 
-			} else if _, ok := expr.(*ast.MapType); ok {
-				slog.Debug("Found map definition in test case", "test", t.Name)
-				t.tableDrivenType = "map"
-				foundTableType = true
-			}
-			return foundTableType
-		}
-
-		// Extract struct or map declarations or assignments anywhere inside the function.
-		// These are typically either inside a DeclStmt, AssignStmt, or RangeStmt as setup for table-driven tests
-		if !foundTableType {
-			ast.Inspect(stmt, func(n ast.Node) bool {
-				// Check if this is a struct or map definition
-				if genDecl, ok := n.(*ast.GenDecl); ok {
-					for _, spec := range genDecl.Specs {
-						if typeSpec, ok := spec.(*ast.TypeSpec); ok {
-							if found := detectTableDrivenType(typeSpec.Type); found {
-								return false
-							}
-						}
-					}
-				}
-
-				// Check if this is a struct or map literal
-				if compositeLit, ok := n.(*ast.CompositeLit); ok {
-					// Struct literal is expected to be a slice
-					if arrStmt, ok := compositeLit.Type.(*ast.ArrayType); ok {
-						if found := detectTableDrivenType(arrStmt.Elt); found {
-							return false
-						}
-
-						// Map literal is expected to be standalone
-					} else if found := detectTableDrivenType(compositeLit.Type); found {
-						return false
-					}
-				}
-
-				return true // Keep checking children nodes
-			})
-		}
-
+	// Iterate in reverse to find the runner loop before trying to find the scenarios
+	stmtsReversed := slices.Clone(stmts)
+	slices.Reverse(stmtsReversed)
+stmtLoop:
+	for _, stmt := range stmtsReversed {
 		// Extract the loop that runs the subtests
-		if !foundLoop {
-			// Helper func for detecting t.Run() calls inside a loop body
-			detectTRun := func(block *ast.BlockStmt) {
-				for _, stmt := range block.List {
-					if exprStmt, ok := stmt.(*ast.ExprStmt); ok {
-						if callExpr, ok := exprStmt.X.(*ast.CallExpr); ok {
-							if selExpr, ok := callExpr.Fun.(*ast.SelectorExpr); ok {
-								if ident, ok := selExpr.X.(*ast.Ident); ok && ident.Name == "t" && selExpr.Sel.Name == "Run" {
-									t.tableDrivenType += ", using t.Run()"
-								}
+		if ss.Runner == nil {
+			// Detect the loop itself
+			if rangeStmt, ok := stmt.(*ast.RangeStmt); ok {
+				slog.Debug("Found range statement in test case", "test", tc.Name)
+
+				// Make sure the loop ranges over a valid data structure
+				ss.DataStructure, ss.ScenarioTemplate = DetectScenarioDataStructure(tc.TypeOf(rangeStmt.X)) // todo probably store these somewhere else
+				if ss.DataStructure == ScenarioNoDS {
+					// Can't do anything if the loop data structure is unknown
+					slog.Warn("Detected a range loop in test case, but the data structure is unknown", "test", tc.Name, "path", tc.FilePath)
+					continue stmtLoop // Try checking for additional loops
+				}
+
+				// Check if the scenario data structure is defined directly in the range statement
+				if _, ok := rangeStmt.X.(*ast.CompositeLit); ok {
+					scenariosDefinedInLoop := ss.SaveScenariosIfMatching(rangeStmt.X, tc)
+					if scenariosDefinedInLoop {
+						slog.Debug("Found scenario definition directly in the range statement", "test", tc.Name, "count", len(ss.Scenarios), "path", tc.FilePath)
+					}
+				}
+
+				ss.Runner = rangeStmt.Body
+
+				continue stmtLoop // Move to the next statement
+			}
+
+			// todo LATER add support for `for-i` loops
+			//  else if forStmt, ok := stmt.(*ast.ForStmt); ok {
+			// 	slog.Debug("Found loop statement in test case", "test", t.Name)
+			// 	t.TableDrivenType += ", with for loop"
+			// 	detectTRun(forStmt.Body)
+			// }
+		}
+
+		// Search for variable assignments matching the detected scenario data structure, with the goal of finding the scenario definitions
+		if ss.Scenarios == nil && ss.ScenarioTemplate != nil {
+			if assignStmt, ok := stmt.(*ast.AssignStmt); ok {
+				for _, expr := range assignStmt.Rhs {
+					found := ss.SaveScenariosIfMatching(expr, tc)
+					if found {
+						slog.Debug("Found scenario definition in function body", "test", tc.Name, "count", len(ss.Scenarios), "path", tc.FilePath)
+						continue stmtLoop // Move to the next statement
+					}
+				}
+			}
+		}
+	} // end of loop over function statements
+
+	// If the loop was found but the Scenario definitions were not, check the file declarations in case they were defined outside the function
+	if ss.Scenarios == nil && ss.ScenarioTemplate != nil {
+		slog.Warn("No scenarios found in the test case, checking file declarations", "test", tc.Name, "path", tc.FilePath)
+	declLoop:
+		for _, decl := range tc.File.Decls {
+			if genDecl, ok := decl.(*ast.GenDecl); ok {
+				if genDecl.Tok != token.VAR {
+					continue declLoop // Only check variable declarations
+				}
+				// Loop over the right-hand side expressions of each variable declaration
+				for _, spec := range genDecl.Specs {
+					if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+						for _, expr := range valueSpec.Values {
+							found := ss.SaveScenariosIfMatching(expr, tc)
+							if found {
+								slog.Debug("Found scenario definition in file declarations", "test", tc.Name, "count", len(ss.Scenarios), "path", tc.FilePath)
+								break declLoop // Stop checking file declarations
 							}
 						}
 					}
 				}
 			}
+		} // end of loop over file declarations
+	}
+}
 
-			if rangeStmt, ok := stmt.(*ast.RangeStmt); ok {
-				slog.Debug("Found range statement in test case", "test", t.Name)
-				t.tableDrivenType += ", with range loop"
-				foundLoop = true
-				detectTRun(rangeStmt.Body)
-
-			} else if forStmt, ok := stmt.(*ast.ForStmt); ok {
-				slog.Debug("Found loop statement in test case", "test", t.Name)
-				t.tableDrivenType += ", with for loop"
-				foundLoop = true
-				detectTRun(forStmt.Body)
-			}
+// Checks whether an expression has the same underlying type as the ScenarioTemplate, and if so, saves the scenarios from the expression.
+// Returns whether the scenarios were saved successfully. Always returns `false` if the `ScenarioSet.DataStructure` is unknown.
+// See https://go.dev/ref/spec#Type_identity for details of the `types.Identical` comparison method.
+func (ss *ScenarioSet) SaveScenariosIfMatching(expr ast.Expr, tc *TestCase) bool {
+	// Both []struct and map are defined using a CompositeLit, so make sure this matches
+	if compositeLit, ok := expr.(*ast.CompositeLit); ok {
+		if len(compositeLit.Elts) == 0 {
+			return false
 		}
 
-		// todo do more work here to classify statements
+		// Depending on the scenario data structure, extract and save the scenarios themselves
+		// todo LATER construct Scenario structs inside the cases.    also might have to make changes here to handle non-struct fields
+		switch ss.DataStructure {
+
+		case ScenarioStructListDS:
+			// Scenarios are directly stored as the elements of the slice
+			typ := tc.TypeOf(compositeLit.Elts[0])
+			if typ != nil && types.Identical(typ.Underlying(), ss.ScenarioTemplate) {
+				ss.Scenarios = compositeLit.Elts
+				return true
+			}
+
+		case ScenarioMapDS:
+			// Scenarios are stored as the values of the `KeyValueExpr` elements
+			kvExpr, ok := compositeLit.Elts[0].(*ast.KeyValueExpr)
+			if ok && types.Identical(tc.TypeOf(kvExpr.Value).Underlying(), ss.ScenarioTemplate) {
+				for _, elt := range compositeLit.Elts {
+					if kvExpr, ok := elt.(*ast.KeyValueExpr); ok {
+						ss.Scenarios = append(ss.Scenarios, kvExpr)
+					}
+				}
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Detects the type of data structure used to store scenarios in a table-driven test.
+// Returns the ScenarioDataStructure type and the underlying struct type used to define scenarios.
+func DetectScenarioDataStructure(typ types.Type) (ScenarioDataStructure, *types.Struct) {
+	if typ == nil {
+		return ScenarioNoDS, nil
 	}
 
-	// Assign default values if table-driven test information was not detected
-	if !foundLoop {
-		t.tableDrivenType += ", no loop"
+	// Check the underlying type
+	// todo CLEANUP maybe refactor for less duplication
+	switch x := typ.Underlying().(type) {
+
+	case *types.Slice:
+		// Check for []struct
+		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
+			return ScenarioStructListDS, structType
+		}
+	case *types.Array:
+		// Check for [N]struct
+		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
+			return ScenarioStructListDS, structType
+		}
+
+	case *types.Map:
+		// Check for map[any]struct
+		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
+			return ScenarioMapDS, structType
+		}
+		return ScenarioMapDS, nil // todo LATER this would be the place to handle maps with non-struct values, like map[string]bool
 	}
+
+	// Default or unknown case if other logic doesn't match
+	return ScenarioNoDS, nil
+}
+
+// Extract relevant information about this TestCase and save the results into its own corresponding fields
+func (tc *TestCase) Analyze() {
+	slog.Debug("Analyzing test case", "testCase", tc.Name, "filePath", tc.FilePath)
+	if tc.FuncDecl == nil || tc.File == nil {
+		slog.Warn("Cannot analyze TestCase because FuncDecl or File is nil", "testCase", tc.Name)
+		return
+	}
+
+	// Analyze the individual statements in the test case
+	stmts := tc.GetStatements()
+
+	tc.ParsedStatements = make([]string, len(stmts))
+	if fset, ok := tc.Fset(); ok {
+		for i, stmt := range stmts {
+			// Stringify the entire statement
+			tc.ParsedStatements[i] = nodeToString(stmt, fset)
+			// todo do more work here to classify statements?
+		}
+	}
+
+	// Populate table-driven test data
+	tc.IdentifyScenarioSet(stmts)
 
 	// Extract imported packages from the file's AST
-
 	var imports []*ast.ImportSpec
-	if t.File != nil {
-		imports = t.File.Imports
+	if tc.File != nil {
+		imports = tc.File.Imports
 	} else {
-		slog.Warn("Cannot extract imported packages in test case because File is nil", "testCase", t.Name)
+		slog.Warn("Cannot extract imported packages in test case because File is nil", "testCase", tc.Name)
 	}
 	for _, imp := range imports {
-		t.importedPackages = append(t.importedPackages, strings.Trim(imp.Path.Value, "\""))
+		tc.ImportedPackages = append(tc.ImportedPackages, strings.Trim(imp.Path.Value, "\""))
 	}
 }

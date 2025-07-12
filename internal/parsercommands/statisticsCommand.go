@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"go/types"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -91,7 +92,7 @@ func (cmd *StatisticsCommand) Execute(args []string) error {
 	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir, cmd.globals.Threads)
 }
 
-func (cmd *StatisticsCommand) Visit(fset *token.FileSet, file *ast.File) {
+func (cmd *StatisticsCommand) Visit(file *ast.File, fset *token.FileSet, typeInfo *types.Info) {
 	projectName := filepath.Base(cmd.globals.ProjectDir)
 	packageName := file.Name.Name
 	fileName := fset.Position(file.Pos()).Filename
@@ -118,7 +119,7 @@ func (cmd *StatisticsCommand) Visit(fset *token.FileSet, file *ast.File) {
 			continue
 		}
 
-		tc := testcase.CreateTestCase(fn, file, fset, projectName)
+		tc := testcase.CreateTestCase(fn, file, projectName, fset, typeInfo)
 		cmd.testCases = append(cmd.testCases, tc)
 
 		lines := tc.NumLines()
