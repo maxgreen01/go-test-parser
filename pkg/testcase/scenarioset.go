@@ -6,10 +6,12 @@ import (
 	"go/token"
 	"go/types"
 	"iter"
+	"strings"
 )
 
 // Represents the set of scenarios defined by a table-driven test
 type ScenarioSet struct {
+	// Core data fields
 	// todo LATER expand to support scenario definitions like `map[string]bool` without a struct template (probably by making changes to `DetectScenarioDataStructure`)
 	ScenarioTemplate *types.Struct // the definition of the `struct` type that individual scenarios are based on
 
@@ -18,6 +20,13 @@ type ScenarioSet struct {
 
 	Runner *ast.BlockStmt // the actual code that runs the subtest (which is the body of a loop)
 
+	// Derived analysis results
+	NameField         string   // the name of the field representing each scenario's name, or "map key" if the map key is used as the name
+	ExpectedFields    []string // the names of fields representing the expected results of each scenario
+	HasFunctionFields bool     // whether the scenario type has any fields whose type is a function
+	UsesSubtest       bool     // whether the test calls `t.Run()` inside the loop body
+
+	// Miscellaneous fields
 	fset **token.FileSet // pointer to the FileSet associated with the parent TestCase, used for printing AST nodes // todo find a better way and remove
 }
 
@@ -66,7 +75,7 @@ func (sds *ScenarioDataStructure) UnmarshalJSON(data []byte) error {
 }
 
 //
-// =============== Regular-Use Methods ===============
+// =============== Analysis Methods ===============
 //
 
 // Returns the fields of the scenario struct definition
@@ -78,8 +87,72 @@ func (ss *ScenarioSet) GetFields() iter.Seq[*types.Var] {
 	return ss.ScenarioTemplate.Fields()
 }
 
-// Returns a bool indicating whether t.Run() is called inside the loop body
-func (ss *ScenarioSet) UsesSubtest() bool {
+// Perform additional analysis based on the core data fields, populating the corresponding fields
+func (ss *ScenarioSet) Analyze() {
+	if ss.ScenarioTemplate == nil {
+		return // Nothing to analyze
+	}
+
+	ss.NameField = ss.detectNameField()
+	ss.ExpectedFields = ss.detectExpectedFields()
+	ss.HasFunctionFields = ss.detectFunctionFields()
+	ss.UsesSubtest = ss.detectSubtest()
+}
+
+// Returns the name of the first field containing "name" or "desc", representing the name of each scenario
+func (ss *ScenarioSet) detectNameField() string {
+	if ss.ScenarioTemplate == nil {
+		return "" // Nothing to analyze
+	}
+
+	// Special case for map data structures where the key is the scenario name,
+	// and this field would already be set by `DetectScenarioDataStructure()`
+	if ss.DataStructure == ScenarioMapDS && ss.NameField != "" {
+		return ss.NameField
+	}
+
+	for field := range ss.GetFields() {
+		lowercase := strings.ToLower(field.Name())
+		if strings.Contains(lowercase, "name") || strings.Contains(lowercase, "desc") {
+			return field.Name()
+		}
+	}
+	return ""
+}
+
+// Returns the names of the fields containing "expect", "want", or "result", representing the expected results of each scenario
+// todo LATER try expanding this to detect fields that are used in assertions or comparisons
+func (ss *ScenarioSet) detectExpectedFields() []string {
+	if ss.ScenarioTemplate == nil {
+		return nil // Nothing to analyze
+	}
+
+	var expectedFields []string
+	for field := range ss.GetFields() {
+		lowercase := strings.ToLower(field.Name())
+		if strings.Contains(lowercase, "expect") || strings.Contains(lowercase, "want") || strings.Contains(lowercase, "result") {
+			expectedFields = append(expectedFields, field.Name())
+		}
+	}
+	return expectedFields
+}
+
+// Returns a bool indicating whether the scenario type has any fields whose type is a function
+func (ss *ScenarioSet) detectFunctionFields() bool {
+	if ss.ScenarioTemplate == nil {
+		return false // Nothing to analyze
+	}
+
+	for field := range ss.GetFields() {
+		if _, ok := field.Type().Underlying().(*types.Signature); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// Returns a bool indicating whether `t.Run()` is called inside the loop body
+func (ss *ScenarioSet) detectSubtest() bool {
 	if ss.Runner == nil {
 		return false
 	}
@@ -105,8 +178,13 @@ type scenarioSetJSON struct {
 	DataStructure ScenarioDataStructure `json:"dataStructure"`
 	Scenarios     []string              `json:"scenarios"`
 
-	Runner      string `json:"runner"`
-	UsesSubtest bool   `json:"usesSubtest"`
+	Runner string `json:"runner"`
+
+	NameField         string   `json:"nameField"`
+	ExpectedFields    []string `json:"expectedFields"`
+	HasFunctionFields bool     `json:"hasFunctionFields"`
+	UsesSubtest       bool     `json:"usesSubtest"`
+
 	// fset is not saved
 }
 
@@ -130,7 +208,11 @@ func (ss *ScenarioSet) MarshalJSON() ([]byte, error) {
 		DataStructure: ss.DataStructure,
 		Scenarios:     scenarioStrs,
 
-		Runner:      nodeToString(ss.Runner, *ss.fset),
-		UsesSubtest: ss.UsesSubtest(),
+		Runner: nodeToString(ss.Runner, *ss.fset),
+
+		NameField:         ss.NameField,
+		ExpectedFields:    ss.ExpectedFields,
+		HasFunctionFields: ss.HasFunctionFields,
+		UsesSubtest:       ss.UsesSubtest,
 	})
 }

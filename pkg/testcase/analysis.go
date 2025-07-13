@@ -34,8 +34,9 @@ stmtLoop:
 			if rangeStmt, ok := stmt.(*ast.RangeStmt); ok {
 				slog.Debug("Found range statement in test case", "test", tc.Name)
 
-				// Make sure the loop ranges over a valid data structure
-				ss.DataStructure, ss.ScenarioTemplate = DetectScenarioDataStructure(tc.TypeOf(rangeStmt.X)) // todo probably store these somewhere else
+				// Make sure the loop ranges over a valid data structure, and save it if so
+				ss.detectScenarioDataStructure(tc.TypeOf(rangeStmt.X))
+
 				if ss.DataStructure == ScenarioNoDS {
 					// Can't do anything if the loop data structure is unknown
 					slog.Warn("Detected a range loop in test case, but the data structure is unknown", "test", tc.Name, "path", tc.FilePath)
@@ -101,6 +102,9 @@ stmtLoop:
 			}
 		} // end of loop over file declarations
 	}
+
+	// Attempt to perform additional analysis on the ScenarioSet
+	ss.Analyze()
 }
 
 // Checks whether an expression has the same underlying type as the ScenarioTemplate, and if so, saves the scenarios from the expression.
@@ -141,11 +145,22 @@ func (ss *ScenarioSet) SaveScenariosIfMatching(expr ast.Expr, tc *TestCase) bool
 	return false
 }
 
-// Detects the type of data structure used to store scenarios in a table-driven test.
-// Returns the ScenarioDataStructure type and the underlying struct type used to define scenarios.
-func DetectScenarioDataStructure(typ types.Type) (ScenarioDataStructure, *types.Struct) {
+// Detects the type of data structure used to store scenarios in a table-driven test as well as
+// the underlying struct type used to define scenarios, then saves both to the `ScenarioSet`.
+// Also checks if the key of a map structure is used to define scenario names.
+//
+// Returns the ScenarioDataStructure type and the underlying struct type used to define scenarios,
+// which are already saved to the `ScenarioSet`.
+func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (sds ScenarioDataStructure, scenarioType *types.Struct) {
+	// Whenever the function returns, save the detected data to the ScenarioSet
+	defer func() {
+		ss.DataStructure = sds
+		ss.ScenarioTemplate = scenarioType
+	}()
+
 	if typ == nil {
-		return ScenarioNoDS, nil
+		sds, scenarioType = ScenarioNoDS, nil
+		return
 	}
 
 	// Check the underlying type
@@ -155,24 +170,38 @@ func DetectScenarioDataStructure(typ types.Type) (ScenarioDataStructure, *types.
 	case *types.Slice:
 		// Check for []struct
 		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
-			return ScenarioStructListDS, structType
+			sds, scenarioType = ScenarioStructListDS, structType
+			return
 		}
 	case *types.Array:
 		// Check for [N]struct
 		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
-			return ScenarioStructListDS, structType
+			sds, scenarioType = ScenarioStructListDS, structType
+			return
 		}
 
 	case *types.Map:
 		// Check for map[any]struct
+		sds = ScenarioMapDS
 		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
-			return ScenarioMapDS, structType
+			scenarioType = structType
 		}
-		return ScenarioMapDS, nil // todo LATER this would be the place to handle maps with non-struct values, like map[string]bool
+
+		// todo LATER this would be the place to handle maps with non-struct values, like map[string]bool
+
+		// If the map key is a string, assume it's the scenario name
+		if keyType, ok := x.Key().Underlying().(*types.Basic); ok {
+			if keyType.Kind() == types.String {
+				ss.NameField = "map key"
+			}
+		}
+
+		return
 	}
 
 	// Default or unknown case if other logic doesn't match
-	return ScenarioNoDS, nil
+	sds, scenarioType = ScenarioNoDS, nil
+	return
 }
 
 // Extract relevant information about this TestCase and save the results into its own corresponding fields

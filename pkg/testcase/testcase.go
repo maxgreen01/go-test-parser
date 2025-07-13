@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/aaronriekenberg/gsm"
@@ -213,7 +214,11 @@ func (tc *TestCase) GetCSVHeaders() []string {
 		"filename",
 		"package",
 		"name",
-		"tableDrivenDataStructure",
+		"scenarioDataStructure",
+		"scenarioNameField",
+		"scenarioExpectedFields",
+		"scenarioHasFunctionFields",
+		"scenarioUsesSubtest",
 		"importedPackages",
 	}
 }
@@ -226,6 +231,10 @@ func (tc *TestCase) EncodeAsCSV() []string {
 		tc.Package,
 		tc.Name,
 		tc.ScenarioSet.DataStructure.String(),
+		tc.ScenarioSet.NameField,
+		strings.Join(tc.ScenarioSet.ExpectedFields, ", "),
+		strconv.FormatBool(tc.ScenarioSet.HasFunctionFields),
+		strconv.FormatBool(tc.ScenarioSet.UsesSubtest),
 		strings.Join(tc.ImportedPackages, ", "),
 	}
 }
