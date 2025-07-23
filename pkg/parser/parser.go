@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
-	"go/types"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -25,7 +24,7 @@ type Task interface {
 	Name() string
 
 	// Function called on every Go source file in the project, which may modify local state to save results
-	Visit(file *ast.File, fset *token.FileSet, typeInfo *types.Info)
+	Visit(file *ast.File, fset *token.FileSet, pkg *packages.Package)
 
 	// Create a new instance of the task with the same initial state and flags.
 	// Used to ensure that each parsed directory can have an independent output.
@@ -212,7 +211,7 @@ func parseDir(ctx context.Context, task Task, dir string) error {
 
 			// Actually process the file
 			// slog.Debug("Processing file", "package", pkg.Name, "file", filePath)
-			task.Visit(file, fset, pkg.TypesInfo)
+			task.Visit(file, fset, pkg)
 		}
 	}
 

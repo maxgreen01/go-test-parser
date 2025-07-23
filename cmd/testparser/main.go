@@ -20,8 +20,6 @@ import (
 	slogmulti "github.com/samber/slog-multi"
 )
 
-// =========== Global command-line flag definitions ===========
-
 // =========== Parse command-line flags and initialize the application ===========
 func main() {
 	// Create the flag parser itself

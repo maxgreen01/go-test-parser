@@ -7,9 +7,10 @@ An advanced research tool for identifying and analyzing unit tests in Go project
 
 ## Features
 
--   Parse and analyze Go test files.
--   Generate detailed reports on test statistics and analysis.
--   Support for various output formats, including CSV and plaintext.
+* Parse and analyze Go test files.
+* Generate detailed reports on test statistics and analysis.
+* Support for various output formats, including CSV and plaintext.
+* Structured logging multiplexed to the terminal and `testparser.log`.
 
 ## Quick Start
 
@@ -39,8 +40,7 @@ To access the help menu and see all available options, run:
 
 ### Statistics
 
-The `statistics` command analyzes the Go test files in the specified project directory and generates various statistics related to the project's test cases. This includes metrics such as the total number of test cases, number of test files, average test length,
-and the percentage of the project comprised of test code (by lines).
+The `statistics` command analyzes the Go test files in the specified project directory and generates various statistics related to the project's test cases. This includes metrics such as the total number of test cases, number of test files, average test length, and the percentage of the project comprised of test code (by lines).
 
 Supports output to either `.txt` or `.csv` files. Output is especially well-suited for a `.csv` file if using the `splitByDir` option.
 

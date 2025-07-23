@@ -2,7 +2,7 @@
 // To synchronize multiple places that can write to the same file, pass around a reference to the same `FileWriter` instance.
 package filewriter
 
-// todo consider making this its own module if it gets large enough
+// TODO IMPROVE consider making this its own module if it gets large enough
 
 import (
 	"errors"
@@ -156,6 +156,7 @@ func (writer *FileWriter) openFile() error {
 }
 
 // Writes data to the file associated with this FileWriter instance, with file format automatically detected.
+// Writes are performed concurrently, so
 // The provided arguments will have different type and structure requirements depending on the file format:
 //   - For text files, `data` must be a string or []string where each element is a line of text, and `otherData` is ignored.
 //   - For CSV files, `data` must be a []string representing a single record with each string being a field, and

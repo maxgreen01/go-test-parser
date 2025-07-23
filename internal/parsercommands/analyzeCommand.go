@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
-	"go/types"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/maxgreen01/go-test-parser/internal/filewriter"
 	"github.com/maxgreen01/go-test-parser/pkg/parser"
 	"github.com/maxgreen01/go-test-parser/pkg/testcase"
+	"golang.org/x/tools/go/packages"
 
 	"github.com/jessevdk/go-flags"
 )
@@ -87,7 +87,7 @@ func (cmd *AnalyzeCommand) Execute(args []string) error {
 	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir, cmd.globals.Threads)
 }
 
-func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, typeInfo *types.Info) {
+func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packages.Package) {
 	projectName := filepath.Base(cmd.globals.ProjectDir)
 	// packageName := file.Name.Name
 	// fileName := fset.Position(file.Pos()).Filename
@@ -107,14 +107,14 @@ func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, typeInfo *
 		if !valid {
 			continue
 		}
-		tc := testcase.CreateTestCase(fn, file, projectName, fset, typeInfo)
+		tc := testcase.CreateTestCase(fn, file, pkg, projectName)
 		cmd.testCases = append(cmd.testCases, &tc)
 
 		// Analyze the test case and save it immediately
 		tc.Analyze()
 		err := tc.SaveAsJSON(cmd.output.GetPathDir())
 		if err != nil {
-			slog.Error("saving test case as JSON", "name", tc.Name, "err", err)
+			slog.Error("saving test case as JSON", "name", tc.TestName(), "err", err)
 		}
 	}
 }

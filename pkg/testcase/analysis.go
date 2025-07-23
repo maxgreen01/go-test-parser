@@ -9,19 +9,58 @@ import (
 	"strings"
 )
 
-// Populates the TestCase's ScenarioSet field using the information extracted from from the test's statements
-func (tc *TestCase) IdentifyScenarioSet(stmts []ast.Stmt) {
-	if len(stmts) == 0 {
-		slog.Warn("Cannot identify ScenarioSet in TestCase because there are no statements", "testCase", tc.Name)
+// Extracts relevant information about this TestCase and save the results into its own corresponding fields
+func (tc *TestCase) Analyze() {
+	slog.Debug("Analyzing test case", "testCase", tc.testName, "filePath", tc.filePath)
+	if tc.FuncDecl == nil || tc.testContext == nil || tc.file == nil {
+		slog.Error("Cannot analyze TestCase because it has nil syntax data", "testCase", tc.testName, "package", tc.packageName)
 		return
 	}
 
-	// Reset the TestCase's ScenarioSet (which should be empty anyway), which will be populated over time with the relevant data
-	tc.ScenarioSet = &ScenarioSet{}
-	ss := tc.ScenarioSet
+	fset := tc.FileSet()
+	if fset == nil {
+		slog.Error("Cannot analyze TestCase because FileSet is nil", "testCase", tc.testName, "package", tc.packageName)
+		return
+	}
 
-	fset, _ := tc.Fset() //todo find a better way
-	ss.fset = &fset
+	// Analyze the individual statements in the test case
+	stmts := tc.GetStatements()
+
+	tc.ParsedStatements = make([]string, len(stmts))
+	for i, stmt := range stmts {
+		// Stringify the entire statement
+		tc.ParsedStatements[i] = nodeToString(stmt, fset)
+
+		// Try to expand the statement if it's a call to a testing helper function
+
+		// todo do more work here to classify statements?
+	}
+
+	// Populate table-driven test data
+	tc.IdentifyScenarioSet(stmts)
+
+	// Extract imported packages from the file's AST
+	var imports []*ast.ImportSpec
+	if tc.file != nil {
+		imports = tc.file.Imports
+		for _, imp := range imports {
+			tc.ImportedPackages = append(tc.ImportedPackages, strings.Trim(imp.Path.Value, "\""))
+		}
+	} else {
+		slog.Error("Cannot extract imported packages in test case because File is nil", "testCase", tc.testName, "package", tc.packageName)
+	}
+}
+
+// Populates the TestCase's ScenarioSet field using the information extracted from from the test's statements
+func (tc *TestCase) IdentifyScenarioSet(stmts []ast.Stmt) {
+	if len(stmts) == 0 {
+		slog.Warn("Cannot identify ScenarioSet in TestCase because there are no statements", "testCase", tc.testName, "package", tc.packageName, "path", tc.filePath)
+		return
+	}
+
+	// Initialize the TestCase's ScenarioSet, whose fields will be populated throughout this method with relevant data
+	tc.ScenarioSet = &ScenarioSet{testContext: tc.testContext}
+	ss := tc.ScenarioSet
 
 	// Iterate in reverse to find the runner loop before trying to find the scenarios
 	stmtsReversed := slices.Clone(stmts)
@@ -32,14 +71,14 @@ stmtLoop:
 		if ss.Runner == nil {
 			// Detect the loop itself
 			if rangeStmt, ok := stmt.(*ast.RangeStmt); ok {
-				slog.Debug("Found range statement in test case", "test", tc.Name)
+				slog.Debug("Found range statement in test case", "testCase", tc.testName)
 
 				// Make sure the loop ranges over a valid data structure, and save it if so
 				ss.detectScenarioDataStructure(tc.TypeOf(rangeStmt.X))
 
 				if ss.DataStructure == ScenarioNoDS {
 					// Can't do anything if the loop data structure is unknown
-					slog.Warn("Detected a range loop in test case, but the data structure is unknown", "test", tc.Name, "path", tc.FilePath)
+					slog.Warn("Detected a range loop in test case, but the data structure is unknown", "testCase", tc.testName, "package", tc.packageName, "path", tc.filePath)
 					continue stmtLoop // Try checking for additional loops
 				}
 
@@ -47,7 +86,7 @@ stmtLoop:
 				if _, ok := rangeStmt.X.(*ast.CompositeLit); ok {
 					scenariosDefinedInLoop := ss.SaveScenariosIfMatching(rangeStmt.X, tc)
 					if scenariosDefinedInLoop {
-						slog.Debug("Found scenario definition directly in the range statement", "test", tc.Name, "count", len(ss.Scenarios), "path", tc.FilePath)
+						slog.Debug("Found scenario definition directly in the range statement", "testCase", tc.testName, "count", len(ss.Scenarios), "package", tc.packageName, "path", tc.filePath)
 					}
 				}
 
@@ -70,7 +109,7 @@ stmtLoop:
 				for _, expr := range assignStmt.Rhs {
 					found := ss.SaveScenariosIfMatching(expr, tc)
 					if found {
-						slog.Debug("Found scenario definition in function body", "test", tc.Name, "count", len(ss.Scenarios), "path", tc.FilePath)
+						slog.Debug("Found scenario definition in function body", "testCase", tc.testName, "count", len(ss.Scenarios), "path", tc.filePath)
 						continue stmtLoop // Move to the next statement
 					}
 				}
@@ -80,27 +119,32 @@ stmtLoop:
 
 	// If the loop was found but the Scenario definitions were not, check the file declarations in case they were defined outside the function
 	if ss.Scenarios == nil && ss.ScenarioTemplate != nil {
-		slog.Warn("No scenarios found in the test case, checking file declarations", "test", tc.Name, "path", tc.FilePath)
-	declLoop:
-		for _, decl := range tc.File.Decls {
-			if genDecl, ok := decl.(*ast.GenDecl); ok {
-				if genDecl.Tok != token.VAR {
-					continue declLoop // Only check variable declarations
-				}
-				// Loop over the right-hand side expressions of each variable declaration
-				for _, spec := range genDecl.Specs {
-					if valueSpec, ok := spec.(*ast.ValueSpec); ok {
-						for _, expr := range valueSpec.Values {
-							found := ss.SaveScenariosIfMatching(expr, tc)
-							if found {
-								slog.Debug("Found scenario definition in file declarations", "test", tc.Name, "count", len(ss.Scenarios), "path", tc.FilePath)
-								break declLoop // Stop checking file declarations
+		slog.Warn("No scenarios found in the test case, checking file declarations", "testCase", tc.testName, "path", tc.filePath)
+
+		if tc.file == nil {
+			slog.Error("Cannot check file declarations because File is nil", "testCase", tc.testName, "package", tc.packageName)
+		} else {
+		declLoop:
+			for _, decl := range tc.file.Decls {
+				if genDecl, ok := decl.(*ast.GenDecl); ok {
+					if genDecl.Tok != token.VAR {
+						continue declLoop // Only check variable declarations
+					}
+					// Loop over the right-hand side expressions of each variable declaration
+					for _, spec := range genDecl.Specs {
+						if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+							for _, expr := range valueSpec.Values {
+								found := ss.SaveScenariosIfMatching(expr, tc)
+								if found {
+									slog.Debug("Found scenario definition in file declarations", "testCase", tc.testName, "count", len(ss.Scenarios), "path", tc.filePath)
+									break declLoop // Stop checking file declarations
+								}
 							}
 						}
 					}
 				}
-			}
-		} // end of loop over file declarations
+			} // end of loop over file declarations
+		}
 	}
 
 	// Attempt to perform additional analysis on the ScenarioSet
@@ -204,37 +248,85 @@ func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (sds Scenario
 	return
 }
 
-// Extract relevant information about this TestCase and save the results into its own corresponding fields
-func (tc *TestCase) Analyze() {
-	slog.Debug("Analyzing test case", "testCase", tc.Name, "filePath", tc.FilePath)
-	if tc.FuncDecl == nil || tc.File == nil {
-		slog.Warn("Cannot analyze TestCase because FuncDecl or File is nil", "testCase", tc.Name)
-		return
-	}
+// Represents the expanded form of a statement as a G-tree node.
+// If the statement is a function call, its inner statements are expanded recursively and stored in `Children`.
+// If the statement is not a function call, `Children` field is nil.
+type ExpandedStatement struct {
+	// The original statement
+	Stmt ast.Stmt
 
-	// Analyze the individual statements in the test case
-	stmts := tc.GetStatements()
-
-	tc.ParsedStatements = make([]string, len(stmts))
-	if fset, ok := tc.Fset(); ok {
-		for i, stmt := range stmts {
-			// Stringify the entire statement
-			tc.ParsedStatements[i] = nodeToString(stmt, fset)
-			// todo do more work here to classify statements?
-		}
-	}
-
-	// Populate table-driven test data
-	tc.IdentifyScenarioSet(stmts)
-
-	// Extract imported packages from the file's AST
-	var imports []*ast.ImportSpec
-	if tc.File != nil {
-		imports = tc.File.Imports
-	} else {
-		slog.Warn("Cannot extract imported packages in test case because File is nil", "testCase", tc.Name)
-	}
-	for _, imp := range imports {
-		tc.ImportedPackages = append(tc.ImportedPackages, strings.Trim(imp.Path.Value, "\""))
-	}
+	// The expanded form of the called function's inner statements, or nil if the statement is not a function call
+	Children []*ExpandedStatement
 }
+
+// Recursively create the fully expanded form of a statement.
+// If `testOnly` is true, only expand statements that are defined in a file with a `_test.go` suffix.
+// todo LATER try to decouple the `TestCase` so this can be used on its own
+func (tc *TestCase) ExpandStatement(stmt ast.Stmt, testOnly bool) *ExpandedStatement {
+	if stmt == nil {
+		return nil
+	}
+
+	expanded := &ExpandedStatement{
+		Stmt: stmt,
+	}
+
+	// If the statement is a function call, expand its inner statements
+	// FIXME work in progress
+	// if exprStmt, ok := stmt.(*ast.ExprStmt); ok {
+	// 	if callExpr, ok := exprStmt.X.(*ast.CallExpr); ok {
+	// 		if ident := callExpr.Fun.(*ast.Ident); ident != nil {
+	// 			// Find the source of the function being called
+	// 			obj := tc.ObjectOf(ident)
+	// 			if obj != nil {
+	// 				if fn, ok := obj.(*types.Func); ok {
+	// 					// Find the function's AST declaration
+	// 					astutil.PathEnclosingInterval()
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// }
+
+	return expanded
+}
+
+// Return the AST definition of the identifier within the current TestCase's project, if it exists.
+// FIXME work in progress
+// func (tc *TestCase) FindDefinition(ident *ast.Ident) ast.Node {
+// 	fset := tc.FileSet()
+// 	if fset == nil || ident == nil {
+// 		return nil
+// 	}
+
+// 	// Get the Object corresponding to the identifier
+// 	// todo handle selector expressions too?
+// 	obj := tc.ObjectOf(ident)
+// 	if obj == nil {
+// 		return nil
+// 	}
+// 	pos := obj.Pos()
+
+// 	// Find the file containing the object
+// 	for _, file := range files {
+// 		if file.Pos() <= pos && pos <= file.End() {
+// 			return file
+// 		}
+// 	}
+// 	if file == nil {
+// 		return nil
+// 	}
+
+// 	// Get the AST node corresponding to the object, plus its ancestors
+// 	path, _ := astutil.PathEnclosingInterval(file, pos, pos)
+
+// 	// Resulting path should never be empty, so check the first element
+// 	node := path[0]
+// 	if _, ok := node.(*ast.File); ok {
+// 		// Definition not found
+// 		return nil
+// 	}
+
+// 	// The first node is the most fine-grained, so we expect it to be the target
+// 	return node
+// }

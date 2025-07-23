@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
-	"go/types"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"github.com/maxgreen01/go-test-parser/internal/filewriter"
 	"github.com/maxgreen01/go-test-parser/pkg/parser"
 	"github.com/maxgreen01/go-test-parser/pkg/testcase"
+	"golang.org/x/tools/go/packages"
 
 	"github.com/jessevdk/go-flags"
 )
@@ -92,7 +92,7 @@ func (cmd *StatisticsCommand) Execute(args []string) error {
 	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir, cmd.globals.Threads)
 }
 
-func (cmd *StatisticsCommand) Visit(file *ast.File, fset *token.FileSet, typeInfo *types.Info) {
+func (cmd *StatisticsCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packages.Package) {
 	projectName := filepath.Base(cmd.globals.ProjectDir)
 	packageName := file.Name.Name
 	fileName := fset.Position(file.Pos()).Filename
@@ -119,7 +119,7 @@ func (cmd *StatisticsCommand) Visit(file *ast.File, fset *token.FileSet, typeInf
 			continue
 		}
 
-		tc := testcase.CreateTestCase(fn, file, projectName, fset, typeInfo)
+		tc := testcase.CreateTestCase(fn, file, pkg, projectName)
 		cmd.testCases = append(cmd.testCases, tc)
 
 		lines := tc.NumLines()
