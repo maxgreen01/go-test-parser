@@ -197,6 +197,8 @@ func (ss *ScenarioSet) detectSubtest() (bool, *ast.CallExpr) {
 // Helper struct for Marshaling and Unmarshaling JSON.
 // Transforms all `ast` nodes to their string representations.
 type scenarioSetJSON struct {
+	// testContext is deliberately not included
+
 	ScenarioTemplate string `json:"scenarioTemplate"`
 
 	DataStructure ScenarioDataStructure `json:"dataStructure"`
@@ -208,8 +210,6 @@ type scenarioSetJSON struct {
 	ExpectedFields    []string `json:"expectedFields"`
 	HasFunctionFields bool     `json:"hasFunctionFields"`
 	UsesSubtest       bool     `json:"usesSubtest"`
-
-	// fset is not saved
 }
 
 // Marshal the ScenarioSet for JSON output

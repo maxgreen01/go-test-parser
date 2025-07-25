@@ -2,12 +2,10 @@ module github.com/maxgreen01/go-test-parser
 
 go 1.24.5
 
-require (
-	github.com/aaronriekenberg/gsm v0.1.30
-	golang.org/x/tools v0.33.0
-)
+require golang.org/x/tools v0.33.0
 
 require (
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/samber/lo v1.49.1 // indirect
 	golang.org/x/sys v0.33.0 // indirect

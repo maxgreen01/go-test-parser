@@ -2,6 +2,7 @@ package testcase
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -41,6 +42,10 @@ func NewTestContext(testName string, file *ast.File, pkg *packages.Package, proj
 	}
 }
 
+//
+// ========== Field Getters ==========
+//
+
 // Get the name of the test case
 func (ctx *testContext) TestName() string { return ctx.testName }
 
@@ -77,8 +82,72 @@ func (ctx *testContext) PackageFiles() []*ast.File {
 	return ctx.pkgInfo.Syntax
 }
 
+// Get the entire import path of the test case's package
+func (ctx *testContext) ImportPath() string {
+	if ctx.pkgInfo == nil {
+		return ""
+	}
+	return ctx.pkgInfo.PkgPath
+}
+
+// Get the "repository root path" part of the test case's package import path.
+// This is the part of the import path before the third slash, e.g. "github.com/user/repo"
+func (ctx *testContext) ImportPathRoot() string {
+	if ctx.pkgInfo == nil {
+		return ""
+	}
+	importPath := ctx.pkgInfo.PkgPath
+	// Find the position of the third slash, and return everything before it
+	slashCount := 0
+	for i, c := range importPath {
+		if c == '/' {
+			slashCount++
+			if slashCount == 3 {
+				return importPath[:i]
+			}
+		}
+	}
+	// If there are fewer than 3 slashes, return the whole import path
+	return importPath
+}
+
+// Get the container for all raw information about the test case's package
+func (ctx *testContext) PackageInfo() *packages.Package { return ctx.pkgInfo }
+
 // Get the AST file where the test case is defined
 func (ctx *testContext) ASTFile() *ast.File { return ctx.file }
+
+func (ctx *testContext) String() string {
+	return fmt.Sprintf("testContext{Name: %s, Package: %s, FilePath: %s, Project: %s}", ctx.testName, ctx.packageName, ctx.filePath, ctx.projectName)
+}
+
+//
+// ========== Action Methods ==========
+//
+
+// Convenience method for getting the type of an expression (including identifiers) within the current TestCase's project.
+// Returns `nil` if the type information for the project is not available, or if the expression is not found.
+func (ctx *testContext) TypeOf(expr ast.Expr) types.Type {
+	typeInfo := ctx.TypeInfo()
+	if typeInfo == nil || expr == nil {
+		return nil
+	}
+	return typeInfo.TypeOf(expr)
+}
+
+// Convenience method for getting the Object corresponding to an identifier within the current TestCase's project.
+// Returns `nil` if the type information for the project is not available, or if the identifier is not found.
+func (ctx *testContext) ObjectOf(ident *ast.Ident) types.Object {
+	typeInfo := ctx.TypeInfo()
+	if typeInfo == nil || ident == nil {
+		return nil
+	}
+	return typeInfo.ObjectOf(ident)
+}
+
+//
+// ========== Output Methods ==========
+//
 
 // Helper struct for Marshaling JSON
 type testContextJSON struct {
@@ -86,6 +155,8 @@ type testContextJSON struct {
 	PackageName string `json:"package"`
 	FilePath    string `json:"filePath"`
 	Name        string `json:"name"`
+
+	// Syntax data is not marshaled
 }
 
 // Marshal a testContext for JSON output, excluding raw syntax data

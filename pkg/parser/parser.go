@@ -157,7 +157,7 @@ func parseDir(ctx context.Context, task Task, dir string) error {
 	pattern := strings.TrimRight(dir, "/\\") + "/..."
 	pkgs, err := packages.Load(cfg, pattern)
 	if err != nil {
-		return fmt.Errorf("failed to load packages in directory %q: %w", dir, err)
+		return fmt.Errorf("loading packages in directory %q: %w", dir, err)
 	}
 	if len(pkgs) == 0 {
 		// todo maybe this should be an error?

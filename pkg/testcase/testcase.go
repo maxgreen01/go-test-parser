@@ -9,7 +9,6 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
-	"go/types"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -29,9 +28,9 @@ type TestCase struct {
 
 	// Analysis results - only available after running `Analyze()`
 	// todo maybe make this all into its own struct like AnalysisResults that references this struct? alternatively, store the struct in this object and call `Analyze()` by default unless a bool is passed to `CreateTestCase`
-	ScenarioSet      *ScenarioSet // the set of scenarios defined in this test case, if it is table-driven
-	ParsedStatements []string     // the parsed statements in the test case, as strings
-	ImportedPackages []string     // the list of imported packages in the test case's file
+	ScenarioSet      *ScenarioSet         // the set of scenarios defined in this test case, if it is table-driven
+	ParsedStatements []*ExpandedStatement // the list of parsed and fully-expanded statements in the test case
+	ImportedPackages []string             // the list of imported packages in the test case's file
 }
 
 // Create a new TestCase struct for storage and analysis
@@ -69,14 +68,13 @@ func IsValidTestCase(funcDecl *ast.FuncDecl) (valid bool, badFormat bool) {
 	name := funcDecl.Name.Name
 
 	// make sure the function name starts with "Test"
-	// TODO allow this to accept "Fuzz" or "Benchmark" and indicate a different category somehow (maybe using enum `type` in TestCase)
+	// todo MAYBE allow this (and condition below) to accept "Fuzz" or "Benchmark" and indicate a different category somehow (maybe using enum `type` in TestCase)
 	if !strings.HasPrefix(name, "Test") {
 		// slog.Debug("\tfunction name does not start with 'Test'", "name", name)
 		return false, false
 	}
 
 	// the function's 5th letter *should* be capitalized, but it's not strictly required
-	// TODO update indices based on comment above
 	if len(name) < 5 || (name[4] < 'A' || name[4] > 'Z') {
 		// slog.Debug("\tfunction has bad format", "name", name)
 		badFormat = true
@@ -128,26 +126,6 @@ func IsValidTestCase(funcDecl *ast.FuncDecl) (valid bool, badFormat bool) {
 	return true, badFormat
 }
 
-// Convenience method for getting the type of an expression (including identifiers) within the current TestCase's project.
-// Returns `nil` if the type information for the project is not available, or if the expression is not found.
-func (tc *TestCase) TypeOf(expr ast.Expr) types.Type {
-	typeInfo := tc.TypeInfo()
-	if typeInfo == nil || expr == nil {
-		return nil
-	}
-	return typeInfo.TypeOf(expr)
-}
-
-// Convenience method for getting the Object corresponding to an identifier within the current TestCase's project.
-// Returns `nil` if the type information for the project is not available, or if the identifier is not found.
-func (tc *TestCase) ObjectOf(ident *ast.Ident) types.Object {
-	typeInfo := tc.TypeInfo()
-	if typeInfo == nil || ident == nil {
-		return nil
-	}
-	return typeInfo.ObjectOf(ident)
-}
-
 // Return the list of statements in this test case
 func (tc *TestCase) GetStatements() []ast.Stmt {
 	if tc.FuncDecl == nil || tc.FuncDecl.Body == nil {
@@ -181,7 +159,7 @@ func (tc *TestCase) NumLines() int {
 
 // Return a string representation of the TestCase for logging and debugging purposes
 func (tc *TestCase) String() string {
-	return fmt.Sprintf("TestCase{Name: %s, Package: %s, FilePath: %s, Project: %s, NumStatements: %d, NumLines: %d}", tc.testName, tc.packageName, tc.filePath, tc.projectName, tc.NumStatements(), tc.NumLines())
+	return fmt.Sprintf("TestCase{%v, NumStatements: %d, NumLines: %d}", tc.testContext, tc.NumStatements(), tc.NumLines())
 }
 
 // Return the headers for the CSV representation of the TestCase
@@ -240,21 +218,20 @@ func (tc *TestCase) SaveAsJSON(dir string) error {
 	return nil
 }
 
-// Helper struct for Marshaling and Unmarshaling JSON, which treats
-// AST nodes as their string representations.
+// Helper struct for Marshaling and Unmarshaling JSON
 type testCaseJSON struct {
-	*testContext
-	FuncDecl string `json:"funcDecl"`
+	TestContext *testContext `json:"testContext"`
+	FuncDecl    string       `json:"funcDecl"`
 
-	ScenarioSet      *ScenarioSet `json:"scenarioSet"`
-	ParsedStatements []string     `json:"parsedStatements"`
-	ImportedPackages []string     `json:"importedPackages"`
+	ScenarioSet      *ScenarioSet         `json:"scenarioSet"`
+	ParsedStatements []*ExpandedStatement `json:"parsedStatements"`
+	ImportedPackages []string             `json:"importedPackages"`
 }
 
 // Marshal a TestCase for JSON output
 func (tc *TestCase) MarshalJSON() ([]byte, error) {
 	return json.Marshal(testCaseJSON{
-		testContext: tc.testContext,
+		TestContext: tc.testContext,
 
 		ScenarioSet:      tc.ScenarioSet,
 		ParsedStatements: tc.ParsedStatements,
@@ -267,15 +244,15 @@ func (tc *TestCase) MarshalJSON() ([]byte, error) {
 // Unmarshal a TestCase from JSON
 // todo maybe remove this because it probably doesn't decode properly
 func (tc *TestCase) UnmarshalJSON(data []byte) error {
-	var aux testCaseJSON
-	if err := json.Unmarshal(data, &aux); err != nil {
+	var jsonData testCaseJSON
+	if err := json.Unmarshal(data, &jsonData); err != nil {
 		return err
 	}
 
 	// Try to decode complex fields
 
 	var funcDecl *ast.FuncDecl
-	expr, err := stringToNode(aux.FuncDecl)
+	expr, err := stringToNode(jsonData.FuncDecl)
 	if err != nil {
 		slog.Error("Failed to parse TestCase FuncDecl from JSON", "error", err)
 	} else {
@@ -283,18 +260,18 @@ func (tc *TestCase) UnmarshalJSON(data []byte) error {
 		if decl, ok := expr.(*ast.FuncDecl); ok {
 			funcDecl = decl
 		} else {
-			slog.Error("Failed to parse TestCase FuncDecl from JSON because it is not a valid function declaration", "string", aux.FuncDecl)
+			slog.Error("Failed to parse TestCase FuncDecl from JSON because it is not a valid function declaration", "string", jsonData.FuncDecl)
 		}
 	}
 
 	// Save data into the main struct
 	*tc = TestCase{
-		testContext: aux.testContext,
+		testContext: jsonData.TestContext,
 		FuncDecl:    funcDecl,
 
-		ScenarioSet:      aux.ScenarioSet,
-		ParsedStatements: aux.ParsedStatements,
-		ImportedPackages: aux.ImportedPackages,
+		ScenarioSet:      jsonData.ScenarioSet,
+		ParsedStatements: jsonData.ParsedStatements,
+		ImportedPackages: jsonData.ImportedPackages,
 	}
 	return nil
 }
@@ -352,19 +329,20 @@ func stringToNode(str string) (ast.Node, error) {
 				return funcDecl.Body.List[0], nil
 			}
 			slog.Debug("Parsed dummy function has no statements; now trying to parse as expression", "file", funcStr)
+		} else {
+			// This should never happen
+			slog.Debug("Parsed dummy file (with dummy function) has no declarations; now trying to parse as expression", "input", str)
 		}
-		// This case should never happen
-		slog.Debug("Parsed dummy file (with dummy function) has no declarations; now trying to parse as expression", "input", str)
 	}
 
 	// Try parsing the original string as an expression
 	expr, err := parser.ParseExpr(str)
-	if err == nil {
-		// If the string is a valid expression, return it
-		return expr, nil
+	if err != nil {
+		return nil, fmt.Errorf("parsing node string %q: %w", str, err)
 	}
 
-	return nil, fmt.Errorf("failed to parse node string %q: %w", str, err)
+	// The string is a valid expression
+	return expr, nil
 }
 
 // Returns a boolean indicating whether a statement is a function call expression of the form `owner.name(...)`,

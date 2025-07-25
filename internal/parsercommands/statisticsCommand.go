@@ -84,7 +84,7 @@ func (cmd *StatisticsCommand) Execute(args []string) error {
 	// Initialize the output writer with the specified output path
 	writer, err := filewriter.NewFileWriter(cmd.globals.OutputPath, cmd.globals.AppendOutput)
 	if err != nil {
-		return fmt.Errorf("failed to create output writer for path %q", cmd.globals.OutputPath)
+		return fmt.Errorf("creating output writer for path %q", cmd.globals.OutputPath)
 	}
 	cmd.output = writer
 
