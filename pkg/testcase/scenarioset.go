@@ -6,12 +6,15 @@ import (
 	"go/types"
 	"iter"
 	"strings"
+
+	"github.com/maxgreen01/go-test-parser/pkg/asttools"
 )
 
-// Represents the set of scenarios defined by a table-driven test
+// Represents the properties of a table-driven test by storing information about the scenarios and their structure,
+// as well as various analysis results derived from this information.
 type ScenarioSet struct {
-	// Contextual identifiers, package-level data, and AST syntax
-	*testContext
+	// Reference to the TestCase this ScenarioSet belongs to
+	TestCase *TestCase
 
 	// Core data fields
 	// todo LATER expand to support scenario definitions like `map[string]bool` without a struct template (probably by making changes to `DetectScenarioDataStructure`)
@@ -181,7 +184,7 @@ func (ss *ScenarioSet) detectSubtest() (bool, *ast.CallExpr) {
 	}
 
 	for _, stmt := range ss.Runner.List {
-		if ok, callExpr := IsSelectorFuncCall(stmt, "t", "Run"); ok {
+		if ok, callExpr := asttools.IsSelectorFuncCall(stmt, "t", "Run"); ok {
 			return true, callExpr
 		}
 	}
@@ -197,7 +200,7 @@ func (ss *ScenarioSet) detectSubtest() (bool, *ast.CallExpr) {
 // Helper struct for Marshaling and Unmarshaling JSON.
 // Transforms all `ast` nodes to their string representations.
 type scenarioSetJSON struct {
-	// testContext is deliberately not included
+	// Parent TestCase is deliberately not included
 
 	ScenarioTemplate string `json:"scenarioTemplate"`
 
@@ -214,7 +217,7 @@ type scenarioSetJSON struct {
 
 // Marshal the ScenarioSet for JSON output
 func (ss *ScenarioSet) MarshalJSON() ([]byte, error) {
-	if ss == nil || ss.testContext == nil {
+	if ss == nil || ss.TestCase == nil {
 		// Can't do anything with improperly initialized ScenarioSet, so return empty JSON data
 		return json.Marshal(scenarioSetJSON{})
 	}
@@ -226,10 +229,10 @@ func (ss *ScenarioSet) MarshalJSON() ([]byte, error) {
 
 	// Marshal individual Scenario data
 	// todo LATER remove when implement Marshal in Scenario
-	fset := ss.FileSet()
+	fset := ss.TestCase.FileSet()
 	scenarioStrs := make([]string, len(ss.Scenarios))
 	for i, node := range ss.Scenarios {
-		scenarioStrs[i] = nodeToString(node, fset)
+		scenarioStrs[i] = asttools.NodeToString(node, fset)
 	}
 
 	return json.Marshal(scenarioSetJSON{
@@ -238,7 +241,7 @@ func (ss *ScenarioSet) MarshalJSON() ([]byte, error) {
 		DataStructure: ss.DataStructure,
 		Scenarios:     scenarioStrs,
 
-		Runner: nodeToString(ss.Runner, fset),
+		Runner: asttools.NodeToString(ss.Runner, fset),
 
 		NameField:         ss.NameField,
 		ExpectedFields:    ss.ExpectedFields,

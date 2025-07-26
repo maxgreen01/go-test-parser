@@ -28,7 +28,7 @@ type AnalyzeCommand struct {
 	output *filewriter.FileWriter
 
 	// Data fields
-	testCases []*testcase.TestCase // list of actual test functions and related metadata
+	testCases []*testcase.AnalysisResult // list of analysis results and related metadata for detected test functions
 }
 
 // Command-line flags for the Analyze command specifically
@@ -101,20 +101,20 @@ func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packa
 
 		// slog.Debug("Checking function...", "name", fn.Name.Name, "package", packageName, "file", fileName)
 
-		// Save the function as a valid test case if it meets all the criteria
+		// Save the function as a valid test case if it meets all the criteria, then immediately analyze it
 		valid, _ := testcase.IsValidTestCase(fn)
 		// todo do something with the `badFormat` return value
 		if !valid {
 			continue
 		}
 		tc := testcase.CreateTestCase(fn, file, pkg, projectName)
-		cmd.testCases = append(cmd.testCases, &tc)
+		analysisResult := testcase.Analyze(&tc)
 
-		// Analyze the test case and save it immediately
-		tc.Analyze()
-		err := tc.SaveAsJSON(cmd.output.GetPathDir())
+		// Save the results to the command's internal list, and write them to a JSON file
+		cmd.testCases = append(cmd.testCases, analysisResult)
+		err := analysisResult.SaveAsJSON(cmd.output.GetPathDir())
 		if err != nil {
-			slog.Error("saving test case as JSON", "name", tc.TestName(), "err", err)
+			slog.Error("saving test case as JSON", "name", tc.TestName, "err", err)
 		}
 	}
 }

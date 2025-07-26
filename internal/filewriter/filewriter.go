@@ -166,6 +166,7 @@ func (writer *FileWriter) openFile() error {
 //     (by one level, to avoid a nested array) if appending to any existing data.
 func (writer *FileWriter) Write(data any, otherData ...any) error {
 	if data == nil {
+		slog.Debug("No data to write, skipping write operation", "outputPath", writer.path)
 		return nil // Nothing to write
 	}
 

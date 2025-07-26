@@ -7,10 +7,10 @@ An advanced research tool for identifying and analyzing unit tests in Go project
 
 ## Features
 
-* Parse and analyze Go test files.
-* Generate detailed reports on test statistics and analysis.
-* Support for various output formats, including CSV and plaintext.
-* Structured logging multiplexed to the terminal and `testparser.log`.
+-   Parse and analyze Go test files.
+-   Generate detailed reports on test statistics and analysis.
+-   Support for various output formats, including CSV and plaintext.
+-   Structured logging multiplexed to the terminal and `testparser.log`.
 
 ## Quick Start
 
@@ -52,7 +52,7 @@ Example:
 
 ### Analyze
 
-The `analyze` command performs a deeper analysis of the test cases in a project. This command identifies various structural elements in each test, with a focus on table-driven test indicators. The results of analyzing the tests are saved in their own JSON files, which are put in a new folder in the same directory as the `output` file. The JSON files are named like `<project>/<project>_<package>_<testcase>.json`.
+The `analyze` command performs a deeper analysis of the test cases in a project. This command identifies various structural elements in each test, with a focus on table-driven test indicators. The results of analyzing the tests are saved in their own JSON files, which are put in a new folder in the same directory as the `output` file. The JSON files are named like `<project>/<project>_<package>_<testName>.json`.
 
 Supports output to either `.txt` or `.csv` files. Output is especially well-suited for a `.csv` file because it will contain a condensed version of the analysis results of every test case.
 

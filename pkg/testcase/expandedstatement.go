@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/maxgreen01/go-test-parser/pkg/asttools"
 	"golang.org/x/tools/go/ast/astutil"
 )
 
@@ -31,19 +32,23 @@ type ExpandedStatement struct {
 // Recursively create the fully expanded form of a function call statement, expanding depth first.
 // If `testOnly` is true, only expand statements that are defined in a file with a `_test.go` suffix.
 // Note that functions are only expanded when they're called, so function literals (e.g. inside `t.Run()`) are not expanded.
-func ExpandStatement(stmt ast.Stmt, context *testContext, testOnly bool) *ExpandedStatement {
-	return expandStatementWithStack(stmt, context, testOnly, nil)
+func ExpandStatement(stmt ast.Stmt, tc *TestCase, testOnly bool) *ExpandedStatement {
+	return expandStatementWithStack(stmt, tc, testOnly, nil)
 }
 
 // Helper for ExpandStatement that tracks the function call stack to avoid expanding recursive calls.
 // Note that the order of processing a statement's "children" is partially determined by the implementation of `ast.Inspect()`.
-func expandStatementWithStack(stmt ast.Stmt, context *testContext, testOnly bool, callStack []string) *ExpandedStatement {
+func expandStatementWithStack(stmt ast.Stmt, tc *TestCase, testOnly bool, callStack []string) *ExpandedStatement {
 	if stmt == nil {
 		return nil
 	}
-	fset := context.FileSet()
+	if tc == nil {
+		slog.Error("Cannot expand statement because TestCase is nil")
+		return nil
+	}
+	fset := tc.FileSet()
 	if fset == nil {
-		slog.Error("Cannot expand statement because context FileSet is nil", "statement", stmt, "context", context)
+		slog.Error("Cannot expand statement because TestCase's FileSet is nil", "statement", stmt, "context", tc)
 		return nil
 	}
 
@@ -88,12 +93,12 @@ func expandStatementWithStack(stmt ast.Stmt, context *testContext, testOnly bool
 			// The callstack doesn't have to be adjusted here because the arg function is run in the same scope as the original statement.
 			if _, ok := arg.(*ast.CallExpr); ok {
 				argStmt := &ast.ExprStmt{X: arg}
-				parent.Children = append(parent.Children, expandStatementWithStack(argStmt, context, testOnly, callStack))
+				parent.Children = append(parent.Children, expandStatementWithStack(argStmt, tc, testOnly, callStack))
 			}
 		}
 
 		// Find the definition of the function being called
-		definition, err := FindDefinition(callExpr.Fun, context, testOnly)
+		definition, err := FindDefinition(callExpr.Fun, tc, testOnly)
 		if err != nil {
 			slog.Error("Error finding definition for function call", "position", fset.Position(callExpr.Pos()), "err", err)
 			return false
@@ -125,7 +130,7 @@ func expandStatementWithStack(stmt ast.Stmt, context *testContext, testOnly bool
 
 		// Recursively expand the function's inner statements using the updated callstack
 		for _, inner := range innerStmts {
-			parent.Children = append(parent.Children, expandStatementWithStack(inner, context, testOnly, callStack))
+			parent.Children = append(parent.Children, expandStatementWithStack(inner, tc, testOnly, callStack))
 		}
 
 		return false
@@ -138,12 +143,16 @@ func expandStatementWithStack(stmt ast.Stmt, context *testContext, testOnly bool
 // Keys are strings formatted as "<position>-<project>-<package>-<testOnly>".
 var findDefinitionMemo = make(map[string]ast.Node)
 
-// Return the AST definition of the expression within the specified context package, if it exists.
+// Return the AST definition of the expression within the specified TestCase's package, if it exists.
 // If the expression is not an identifier or selector expression, returns the original expression.
 // Returns nil for both return values (indicating that the definition was deliberately excluded) in the following cases:
 //   - The expression is not defined in the specified context package
 //   - If `testOnly` is true and the expression is not defined in a file with a `_test.go` suffix
-func FindDefinition(expr ast.Expr, context *testContext, testOnly bool) (ast.Node, error) {
+func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error) {
+	if tc == nil {
+		return nil, fmt.Errorf("TestCase is nil")
+	}
+
 	var ident *ast.Ident
 	switch x := expr.(type) {
 	case *ast.Ident:
@@ -155,9 +164,9 @@ func FindDefinition(expr ast.Expr, context *testContext, testOnly bool) (ast.Nod
 	}
 
 	// Get the type object corresponding to the identifier (i.e. its definition)
-	obj := context.ObjectOf(ident)
+	obj := tc.ObjectOf(ident)
 	if obj == nil {
-		return nil, fmt.Errorf("could not resolve identifier %q in the context %v", ident.Name, context)
+		return nil, fmt.Errorf("could not resolve identifier %q in the context %v", ident.Name, tc)
 	}
 	pos := obj.Pos()
 	pkg := obj.Pkg()
@@ -168,14 +177,14 @@ func FindDefinition(expr ast.Expr, context *testContext, testOnly bool) (ast.Nod
 		// Universe-scope function
 		slog.Debug("Ignoring universe-scope function", "identifier", ident.Name)
 		return nil, nil
-	} else if pkg.Path() != context.ImportPath() {
+	} else if pkg.Path() != tc.ImportPath() {
 		// Function defined outside the current package
 		slog.Debug("Ignoring function defined outside the current package", "identifier", ident.Name, "package", pkg.Path())
 		return nil, nil
 	}
 
 	// Check the memoization cache to see if the definition has already been found
-	cacheKey := fmt.Sprintf("%d-%s-%s-%v", pos, context.packageName, context.projectName, testOnly)
+	cacheKey := fmt.Sprintf("%d-%s-%s-%v", pos, tc.PackageName, tc.ProjectName, testOnly)
 	if node, ok := findDefinitionMemo[cacheKey]; ok {
 		// Definition already found, so return it
 		return node, nil
@@ -183,25 +192,25 @@ func FindDefinition(expr ast.Expr, context *testContext, testOnly bool) (ast.Nod
 
 	// Find the AST file containing the object
 	var definitionFile *ast.File
-	for _, file := range context.PackageFiles() {
+	for _, file := range tc.PackageFiles() {
 		if file.FileStart <= pos && pos <= file.FileEnd {
 			definitionFile = file
 			break
 		}
 	}
 	if definitionFile == nil {
-		return nil, fmt.Errorf("could not find definition file for identifier %q in context %v", ident.Name, context)
+		return nil, fmt.Errorf("could not find definition file for identifier %q in context %v", ident.Name, tc)
 	}
 
 	if testOnly {
 		// Only expand definitions inside test files
-		fset := context.FileSet()
+		fset := tc.FileSet()
 		if fset == nil {
-			return nil, fmt.Errorf("could not check definition file path for identifier %q because FileSet is nil in context %v", ident.Name, context)
+			return nil, fmt.Errorf("could not check definition file path for identifier %q because FileSet is nil in context %v", ident.Name, tc)
 		}
 		if !strings.HasSuffix(fset.Position(definitionFile.FileStart).Filename, "_test.go") {
 			// Definition not in a test file
-			slog.Debug("Ignoring identifier definition found outside a test file", "identifier", ident.Name, "context", context)
+			slog.Debug("Ignoring identifier definition found outside a test file", "identifier", ident.Name, "context", tc)
 			return nil, nil
 		}
 	}
@@ -213,18 +222,18 @@ func FindDefinition(expr ast.Expr, context *testContext, testOnly bool) (ast.Nod
 	node := path[0]
 	if _, ok := node.(*ast.File); ok {
 		// Definition not found
-		return nil, fmt.Errorf("could not find definition for identifier %q in context %v", ident.Name, context)
+		return nil, fmt.Errorf("could not find definition for identifier %q in context %v", ident.Name, tc)
 	}
 
 	// The first node is expected to be the original identifier itself, so the second node should be the actual target definition
 	if _, ok := node.(*ast.Ident); ok && len(path) > 1 && path[1] != nil {
 		def := path[1]
-		slog.Debug("Found definition for identifier", "identifier", ident.Name, "position", def.Pos(), "context", context)
+		slog.Debug("Found definition for identifier", "identifier", ident.Name, "position", def.Pos(), "context", tc)
 		findDefinitionMemo[cacheKey] = def // Store the definition in the memoization cache
 		return def, nil
 	}
 
-	return nil, fmt.Errorf("found definition for identifier %q, but found unexpected results (%v) in context %v", ident.Name, path, context)
+	return nil, fmt.Errorf("found definition for identifier %q, but found unexpected results (%v) in context %v", ident.Name, path, tc)
 }
 
 //
@@ -242,14 +251,14 @@ func (es *ExpandedStatement) String() string {
 	}
 	if es.Children == nil {
 		// If there are no children, just return the stringified statement
-		return fmt.Sprintf("ExpandedStatement{Stmt: %v}", nodeToString(es.Stmt, es.fset))
+		return fmt.Sprintf("ExpandedStatement{Stmt: %v}", asttools.NodeToString(es.Stmt, es.fset))
 	}
 
 	children := make([]string, len(es.Children))
 	for i, child := range es.Children {
 		children[i] = child.String()
 	}
-	return fmt.Sprintf("ExpandedStatement{Stmt: %v, Children: [%v]}", nodeToString(es.Stmt, es.fset), strings.Join(children, ", "))
+	return fmt.Sprintf("ExpandedStatement{Stmt: %v, Children: [%v]}", asttools.NodeToString(es.Stmt, es.fset), strings.Join(children, ", "))
 }
 
 // Helper struct for Marshaling and Unmarshaling JSON
@@ -262,7 +271,7 @@ type expandedStatementJSON struct {
 // Marshal a TestCase for JSON output
 func (es *ExpandedStatement) MarshalJSON() ([]byte, error) {
 	return json.Marshal(expandedStatementJSON{
-		Stmt:     nodeToString(es.Stmt, es.fset),
+		Stmt:     asttools.NodeToString(es.Stmt, es.fset),
 		Children: es.Children,
 	})
 }
@@ -275,7 +284,7 @@ func (es *ExpandedStatement) UnmarshalJSON(data []byte) error {
 	}
 
 	var recoveredStmt ast.Stmt
-	expr, err := stringToNode(jsonData.Stmt)
+	expr, err := asttools.StringToNode(jsonData.Stmt)
 	if err != nil {
 		slog.Error("Failed to parse ExpandedStatement from JSON", "error", err)
 	} else {
