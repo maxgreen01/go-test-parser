@@ -16,7 +16,7 @@ func IdentifyScenarioSet(tc *TestCase) *ScenarioSet {
 	}
 	stmts := tc.GetStatements()
 	if len(stmts) == 0 {
-		slog.Warn("Cannot identify ScenarioSet because there are no statements", "testCase", tc.TestName, "package", tc.PackageName, "path", tc.FilePath)
+		slog.Warn("Cannot identify ScenarioSet because there are no statements", "testCase", tc)
 		return nil
 	}
 
@@ -39,7 +39,7 @@ stmtLoop:
 
 				if ss.DataStructure == ScenarioNoDS {
 					// Can't do anything if the loop data structure is unknown
-					slog.Debug("Detected a range loop in test case, but the data structure is unknown", "testCase", tc.TestName, "package", tc.PackageName, "path", tc.FilePath)
+					slog.Debug("Detected a range loop in test case, but the data structure is unknown", "testCase", tc)
 					continue stmtLoop // Try checking for additional loops
 				}
 
@@ -47,7 +47,7 @@ stmtLoop:
 				if _, ok := rangeStmt.X.(*ast.CompositeLit); ok {
 					scenariosDefinedInLoop := ss.IdentifyScenarios(rangeStmt.X, tc)
 					if scenariosDefinedInLoop {
-						slog.Debug("Found scenario definition directly in the range statement", "testCase", tc.TestName, "count", len(ss.Scenarios), "package", tc.PackageName, "path", tc.FilePath)
+						slog.Debug("Found scenario definition directly in the range statement", "testCase", tc, "scenarios", len(ss.Scenarios))
 					}
 				}
 
@@ -70,7 +70,7 @@ stmtLoop:
 				for _, expr := range assignStmt.Rhs {
 					found := ss.IdentifyScenarios(expr, tc)
 					if found {
-						slog.Debug("Found scenario definition in function body", "testCase", tc.TestName, "count", len(ss.Scenarios), "path", tc.FilePath)
+						slog.Debug("Found scenario definition in function body", "testCase", tc, "scenarios", len(ss.Scenarios))
 						continue stmtLoop // Move to the next statement
 					}
 				}
@@ -80,10 +80,10 @@ stmtLoop:
 
 	// If the loop was found but the Scenario definitions were not, check the file declarations in case they were defined outside the function
 	if ss.Scenarios == nil && ss.ScenarioTemplate != nil {
-		slog.Debug("No scenarios found in the test case, checking file declarations", "testCase", tc.TestName, "path", tc.FilePath)
+		slog.Debug("No scenarios found in the test case, checking file declarations", "testCase", tc)
 
 		if tc.File() == nil {
-			slog.Error("Cannot check file declarations because File is nil", "testCase", tc.TestName, "package", tc.PackageName)
+			slog.Error("Cannot check file declarations because File is nil", "testCase", tc)
 		} else {
 		declLoop:
 			for _, decl := range tc.File().Decls {
@@ -97,7 +97,7 @@ stmtLoop:
 							for _, expr := range valueSpec.Values {
 								found := ss.IdentifyScenarios(expr, tc)
 								if found {
-									slog.Debug("Found scenario definition in file declarations", "testCase", tc.TestName, "count", len(ss.Scenarios), "path", tc.FilePath)
+									slog.Debug("Found scenario definition in file declarations", "testCase", tc, "scenarios", len(ss.Scenarios))
 									break declLoop // Stop checking file declarations
 								}
 							}
@@ -119,16 +119,10 @@ stmtLoop:
 //
 // Returns the ScenarioDataStructure type and the underlying struct type used to define scenarios,
 // which are already saved to the `ScenarioSet`.
-func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (sds ScenarioDataStructure, scenarioType *types.Struct) {
-	// Whenever the function returns, save the detected data to the ScenarioSet
-	defer func() {
-		ss.DataStructure = sds
-		ss.ScenarioTemplate = scenarioType
-	}()
-
+func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (ScenarioDataStructure, *types.Struct) {
 	if typ == nil {
-		sds, scenarioType = ScenarioNoDS, nil
-		return
+		ss.DataStructure, ss.ScenarioTemplate = ScenarioNoDS, nil
+		return ss.DataStructure, ss.ScenarioTemplate
 	}
 
 	// Check the underlying type
@@ -138,21 +132,21 @@ func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (sds Scenario
 	case *types.Slice:
 		// Check for []struct
 		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
-			sds, scenarioType = ScenarioStructListDS, structType
-			return
+			ss.DataStructure, ss.ScenarioTemplate = ScenarioStructListDS, structType
+			return ss.DataStructure, ss.ScenarioTemplate
 		}
 	case *types.Array:
 		// Check for [N]struct
 		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
-			sds, scenarioType = ScenarioStructListDS, structType
-			return
+			ss.DataStructure, ss.ScenarioTemplate = ScenarioStructListDS, structType
+			return ss.DataStructure, ss.ScenarioTemplate
 		}
 
 	case *types.Map:
 		// Check for map[any]struct
-		sds = ScenarioMapDS
+		ss.DataStructure = ScenarioMapDS
 		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
-			scenarioType = structType
+			ss.ScenarioTemplate = structType
 		}
 
 		// todo LATER this would be the place to handle maps with non-struct values, like map[string]bool
@@ -164,12 +158,12 @@ func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (sds Scenario
 			}
 		}
 
-		return
+		return ss.DataStructure, ss.ScenarioTemplate
 	}
 
 	// Default or unknown case if other logic doesn't match
-	sds, scenarioType = ScenarioNoDS, nil
-	return
+	ss.DataStructure, ss.ScenarioTemplate = ScenarioNoDS, nil
+	return ss.DataStructure, ss.ScenarioTemplate
 }
 
 // Checks whether an expression has the same underlying type as the ScenarioTemplate, and if so, saves the scenarios from the expression.

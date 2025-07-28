@@ -29,10 +29,15 @@ type AnalyzeCommand struct {
 
 	// Data fields
 	testCases []*testcase.AnalysisResult // list of analysis results and related metadata for detected test functions
+
+	refactorAttempts  int // total number of test cases that were attempted to be refactored
+	refactorSuccesses int // number of test cases that were successfully refactored in some way
 }
 
 // Command-line flags for the Analyze command specifically
 type analyzeOptions struct {
+	// todo LATER/MAYBE make this a slice so multiple refactoring methods can be applied at once
+	RefactorStrategy string `long:"refactor" description:"The type(s) of refactoring to perform on the detected test cases" choice:"none" choice:"subtest" default:"none"`
 }
 
 // Compile-time interface implementation check
@@ -55,7 +60,7 @@ func (cmd *AnalyzeCommand) Name() string {
 }
 
 // Create a new instance of the AnalyzeCommand with the same initial state and flags, COPYING `globals`.
-// Note that `output` is shared by reference, so the same `FileWriter` instance is shared by all cloned instances.
+// Note that `output` is shared by reference so `FileWriter` instances can be shared, but it is usually nil until `Execute()`.
 func (cmd *AnalyzeCommand) Clone() parser.Task {
 	globals := *cmd.globals
 	return &AnalyzeCommand{
@@ -83,10 +88,14 @@ func (cmd *AnalyzeCommand) Execute(args []string) error {
 	}
 	cmd.output = writer
 
+	// Validate refactoring strategy. Allowed options are handled by the `choice` tag in the struct definition.
+	cmd.RefactorStrategy = strings.ToLower(strings.TrimSpace(cmd.RefactorStrategy))
+
 	// Actually run the task by starting the parser
 	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir, cmd.globals.Threads)
 }
 
+// Extract test cases from the given file, analyze them, and potentially refactor them before saving the results to JSON files.
 func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packages.Package) {
 	projectName := filepath.Base(cmd.globals.ProjectDir)
 	// packageName := file.Name.Name
@@ -101,17 +110,28 @@ func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packa
 
 		// slog.Debug("Checking function...", "name", fn.Name.Name, "package", packageName, "file", fileName)
 
-		// Save the function as a valid test case if it meets all the criteria, then immediately analyze it
+		// Save the function as a valid test case if it meets all the criteria
 		valid, _ := testcase.IsValidTestCase(fn)
 		// todo do something with the `badFormat` return value
 		if !valid {
 			continue
 		}
 		tc := testcase.CreateTestCase(fn, file, pkg, projectName)
-		analysisResult := testcase.Analyze(&tc)
 
-		// Save the results to the command's internal list, and write them to a JSON file
+		// Analyze and store the test case
+		analysisResult := testcase.Analyze(&tc)
 		cmd.testCases = append(cmd.testCases, analysisResult)
+
+		// Attempt to refactor the test case if a refactoring strategy is specified
+		result := analysisResult.AttemptRefactoring(testcase.RefactorStrategyFromString(cmd.RefactorStrategy))
+		if result.Strategy != testcase.RefactorStrategyNone && result.Status != testcase.RefactorStatusNone {
+			cmd.refactorAttempts++
+			if result.Status == testcase.RefactorStatusSuccess {
+				cmd.refactorSuccesses++
+			}
+		}
+
+		// Write all results to a JSON file
 		err := analysisResult.SaveAsJSON(cmd.output.GetPathDir())
 		if err != nil {
 			slog.Error("saving test case as JSON", "name", tc.TestName, "err", err)
@@ -119,6 +139,8 @@ func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packa
 	}
 }
 
+// Summarize the results of the entire analysis in one file, leaving the bulk of the specific data about each
+// test case in its corresponding JSON file that was saved previously.
 func (cmd *AnalyzeCommand) ReportResults() error {
 	// Format output for printing the report to the terminal (and potentially writing to a text file)
 
@@ -134,6 +156,9 @@ func (cmd *AnalyzeCommand) ReportResults() error {
 		reportLines = append(reportLines,
 			fmt.Sprintf("Number of test cases: %d\n", numTests),
 			"\n",
+			fmt.Sprintf("Refactoring strategy: %q\n", cmd.RefactorStrategy),
+			fmt.Sprintf("Refactoring attempts: %d\n", cmd.refactorAttempts),
+			fmt.Sprintf("Refactoring successes: %d\n", cmd.refactorSuccesses),
 			// todo maybe put more here
 		)
 	}
@@ -165,6 +190,7 @@ func (cmd *AnalyzeCommand) ReportResults() error {
 	}
 }
 
+// Close the output file writer
 func (cmd *AnalyzeCommand) Close() {
 	if cmd.output != nil {
 		cmd.output.Close()

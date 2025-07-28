@@ -33,7 +33,7 @@ type ScenarioSet struct {
 }
 
 //
-// =============== Field Definitions ===============
+// =============== Supporting Type Definitions ===============
 //
 
 // Represents the type of data structure used to store scenarios
@@ -79,15 +79,6 @@ func (sds *ScenarioDataStructure) UnmarshalJSON(data []byte) error {
 //
 // =============== Analysis Methods ===============
 //
-
-// Returns the fields of the scenario struct definition
-// todo note that defining fields like `a, b int` counts as one `Field` element with multiple Names -- need to account for this
-func (ss *ScenarioSet) GetFields() iter.Seq[*types.Var] {
-	if ss.ScenarioTemplate == nil {
-		return nil
-	}
-	return ss.ScenarioTemplate.Fields()
-}
 
 // Perform additional analysis based on the core data fields, populating the corresponding fields
 func (ss *ScenarioSet) Analyze() {
@@ -191,7 +182,28 @@ func (ss *ScenarioSet) detectSubtest() (bool, *ast.CallExpr) {
 	return false, nil
 }
 
-// todo add similar methods like whether the type and/or scenarios are defined outside the function by comparing their `Pos` against the overall test's bounds
+// todo add more analysis methods, like whether the scenario type and/or scenarios themselves are defined outside the function by comparing their `Pos` against the overall test function's bounds
+
+//
+// =============== Result Getters ===============
+//
+
+// Returns the fields of the scenario struct definition
+// todo note that defining fields like `a, b int` counts as one `Field` element with multiple Names -- need to account for this
+func (ss *ScenarioSet) GetFields() iter.Seq[*types.Var] {
+	if ss.ScenarioTemplate == nil {
+		return nil
+	}
+	return ss.ScenarioTemplate.Fields()
+}
+
+// Returns whether the detected information in the ScenarioSet is indicative of a table-driven test
+func (ss *ScenarioSet) IsTableDriven() bool {
+	if ss == nil {
+		return false
+	}
+	return ss.DataStructure != ScenarioNoDS && ss.ScenarioTemplate != nil && len(ss.Scenarios) > 0
+}
 
 //
 // =============== Output Methods ===============

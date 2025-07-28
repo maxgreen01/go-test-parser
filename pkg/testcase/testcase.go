@@ -191,7 +191,7 @@ func (tc *TestCase) FuncDecl() *ast.FuncDecl { return tc.funcDecl }
 // Return the list of statements in this test case
 func (tc *TestCase) GetStatements() []ast.Stmt {
 	if tc.funcDecl == nil || tc.funcDecl.Body == nil {
-		slog.Error("Cannot get statements from test case because funcDecl or its body is nil", "testCase", tc.TestName, "package", tc.PackageName)
+		slog.Error("Cannot get statements from test case because funcDecl or its body is nil", "testCase", tc)
 		return nil
 	}
 	return tc.funcDecl.Body.List
@@ -207,7 +207,7 @@ func (tc *TestCase) NumStatements() int {
 func (tc *TestCase) NumLines() int {
 	fset := tc.FileSet()
 	if tc.funcDecl == nil || fset == nil {
-		slog.Error("Cannot determine number of lines in test case because FuncDecl or FileSet is nil", "testCase", tc.TestName, "package", tc.PackageName)
+		slog.Error("Cannot determine number of lines in test case because FuncDecl or FileSet is nil", "testCase", tc)
 		return 0
 	}
 	start := fset.Position(tc.funcDecl.Pos())
@@ -295,13 +295,13 @@ func (tc *TestCase) UnmarshalJSON(data []byte) error {
 	var funcDecl *ast.FuncDecl
 	expr, err := asttools.StringToNode(jsonData.FuncDecl)
 	if err != nil {
-		slog.Error("Failed to parse TestCase FuncDecl from JSON", "error", err)
+		return fmt.Errorf("parsing TestCase FuncDecl from JSON: %w", err)
 	} else {
 		// Only check the type if the string was parsed successfully
 		if decl, ok := expr.(*ast.FuncDecl); ok {
 			funcDecl = decl
 		} else {
-			slog.Error("Failed to parse TestCase FuncDecl from JSON because it is not a valid function declaration", "string", jsonData.FuncDecl)
+			return fmt.Errorf("TestCase FuncDecl is not a valid function declaration: %w", jsonData.FuncDecl)
 		}
 	}
 

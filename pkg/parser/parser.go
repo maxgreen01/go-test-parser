@@ -27,7 +27,7 @@ type Task interface {
 	Visit(file *ast.File, fset *token.FileSet, pkg *packages.Package)
 
 	// Create a new instance of the task with the same initial state and flags.
-	// Used to ensure that each parsed directory can have an independent output.
+	// Used to ensure that each parsed directory can have an independent output if `splitByDir` is true.
 	Clone() Task
 
 	// Set the project directory for this task. Often used after Clone to set the directory for the new instance.

@@ -60,7 +60,7 @@ func (cmd *StatisticsCommand) Name() string {
 }
 
 // Create a new instance of the StatisticsCommand with the same initial state and flags, COPYING `globals`.
-// Note that `output` is shared by reference, so the same `FileWriter` instance is shared by all cloned instances.
+// Note that `output` is shared by reference so `FileWriter` instances can be shared, but it is usually nil until `Execute()`.
 func (cmd *StatisticsCommand) Clone() parser.Task {
 	globals := *cmd.globals
 	return &StatisticsCommand{
@@ -92,6 +92,7 @@ func (cmd *StatisticsCommand) Execute(args []string) error {
 	return parser.Parse(cmd, cmd.globals.ProjectDir, cmd.globals.SplitByDir, cmd.globals.Threads)
 }
 
+// Increment some numerical statistics about the project as a whole and its detected test cases
 func (cmd *StatisticsCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packages.Package) {
 	projectName := filepath.Base(cmd.globals.ProjectDir)
 	packageName := file.Name.Name
@@ -127,6 +128,7 @@ func (cmd *StatisticsCommand) Visit(file *ast.File, fset *token.FileSet, pkg *pa
 	}
 }
 
+// Calculate some additional results and write everything to the output file
 func (cmd *StatisticsCommand) ReportResults() error {
 	// Format output for printing the report to the terminal (and potentially writing to a text file)
 
@@ -197,6 +199,7 @@ func (cmd *StatisticsCommand) ReportResults() error {
 	}
 }
 
+// Close the output file writer
 func (cmd *StatisticsCommand) Close() {
 	if cmd.output != nil {
 		cmd.output.Close()

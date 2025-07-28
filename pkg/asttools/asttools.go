@@ -43,34 +43,40 @@ func NodeToString(node ast.Node, fset *token.FileSet) string {
 	return buf.String()
 }
 
+// Fake package and function declarations are used when parsing strings into AST nodes
+const (
+	_fakePackage = "package _"
+	_fakeFunc    = "func _() "
+)
+
 // Parse a string (usually from JSON) into the corresponding AST expression.
 // This function tries to parse the string as a declaration, statement, or expression in that order.
 func StringToNode(str string) (ast.Node, error) {
 	// First try parsing the string as a declaration by treating the string as a Go source file
-	dummyFset := token.NewFileSet()
-	fileStr := "package dummy\n" + str
-	file, err := parser.ParseFile(dummyFset, "", fileStr, parser.ParseComments)
+	fakeFset := token.NewFileSet()
+	fileStr := _fakePackage + "\n" + str
+	file, err := parser.ParseFile(fakeFset, "", fileStr, parser.ParseComments)
 	if err == nil {
 		// Extract and return the first declaration in the file
 		if len(file.Decls) > 0 {
 			return file.Decls[0], nil
 		}
-		slog.Debug("Parsed dummy file has no declarations; now trying to parse as statement or expression", "input", str)
+		slog.Debug("Parsed fake file has no declarations; now trying to parse as statement or expression", "input", str)
 	}
 
 	// Try parsing the string as a statement by wrapping the string in a function
-	funcStr := "package dummy\nfunc dummyFunc() {\n" + str + "\n}"
-	file, err = parser.ParseFile(dummyFset, "", funcStr, parser.ParseComments)
+	funcStr := _fakeFunc + "\n" + _fakeFunc + "{\n" + str + "\n}"
+	file, err = parser.ParseFile(fakeFset, "", funcStr, parser.ParseComments)
 	if err == nil {
 		// Extract and return the first statement in the function body
 		if len(file.Decls) > 0 {
 			if funcDecl, ok := file.Decls[0].(*ast.FuncDecl); ok && len(funcDecl.Body.List) > 0 {
 				return funcDecl.Body.List[0], nil
 			}
-			slog.Debug("Parsed dummy function has no statements; now trying to parse as expression", "file", funcStr)
+			slog.Debug("Parsed fake function has no statements; now trying to parse as expression", "file", funcStr)
 		} else {
 			// This should never happen
-			slog.Debug("Parsed dummy file (with dummy function) has no declarations; now trying to parse as expression", "input", str)
+			slog.Debug("Parsed fake file (with fake function) has no declarations; now trying to parse as expression", "input", str)
 		}
 	}
 
@@ -109,4 +115,16 @@ func MatchSelectorExpr(expr ast.Expr, owner, name string) bool {
 		}
 	}
 	return false
+}
+
+//
+// ========== Node Creation Functions ==========
+//
+
+// Creates a selector expression of the form `owner.name`.
+func CreateSelectorExpr(owner, name string) ast.Expr {
+	return &ast.SelectorExpr{
+		X:   &ast.Ident{Name: owner},
+		Sel: &ast.Ident{Name: name},
+	}
 }

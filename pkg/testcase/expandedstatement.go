@@ -48,7 +48,7 @@ func expandStatementWithStack(stmt ast.Stmt, tc *TestCase, testOnly bool, callSt
 	}
 	fset := tc.FileSet()
 	if fset == nil {
-		slog.Error("Cannot expand statement because TestCase's FileSet is nil", "statement", stmt, "context", tc)
+		slog.Error("Cannot expand statement because TestCase's FileSet is nil", "statement", stmt, "testcase", tc)
 		return nil
 	}
 
