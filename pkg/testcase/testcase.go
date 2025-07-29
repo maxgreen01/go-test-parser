@@ -149,7 +149,7 @@ func (tc *TestCase) TypeInfo() *types.Info {
 }
 
 // Get all the AST files involved in the test case's package
-func (tc *TestCase) PackageFiles() []*ast.File {
+func (tc *TestCase) GetPackageFiles() []*ast.File {
 	if tc.pkgInfo == nil {
 		return nil
 	}
@@ -157,7 +157,7 @@ func (tc *TestCase) PackageFiles() []*ast.File {
 }
 
 // Get the entire import path of the test case's package
-func (tc *TestCase) ImportPath() string {
+func (tc *TestCase) GetImportPath() string {
 	if tc.pkgInfo == nil {
 		return ""
 	}
@@ -166,7 +166,7 @@ func (tc *TestCase) ImportPath() string {
 
 // Get the "repository root path" part of the test case's package import path.
 // This is the part of the import path before the third slash, e.g. "github.com/user/repo"
-func (tc *TestCase) ImportPathRoot() string {
+func (tc *TestCase) GetImportPathRoot() string {
 	if tc.pkgInfo == nil {
 		return ""
 	}
@@ -186,7 +186,7 @@ func (tc *TestCase) ImportPathRoot() string {
 }
 
 // Get the AST function declaration for the test case
-func (tc *TestCase) FuncDecl() *ast.FuncDecl { return tc.funcDecl }
+func (tc *TestCase) GetFuncDecl() *ast.FuncDecl { return tc.funcDecl }
 
 // Return the list of statements in this test case
 func (tc *TestCase) GetStatements() []ast.Stmt {
@@ -216,10 +216,10 @@ func (tc *TestCase) NumLines() int {
 }
 
 // Get the AST file where the test case is defined
-func (tc *TestCase) File() *ast.File { return tc.file }
+func (tc *TestCase) GetFile() *ast.File { return tc.file }
 
 // Get the container for all raw information about the test case's package
-func (tc *TestCase) PackageInfo() *packages.Package { return tc.pkgInfo }
+func (tc *TestCase) GetPackageInfo() *packages.Package { return tc.pkgInfo }
 
 //
 // ========== Action Methods ==========
@@ -301,7 +301,7 @@ func (tc *TestCase) UnmarshalJSON(data []byte) error {
 		if decl, ok := expr.(*ast.FuncDecl); ok {
 			funcDecl = decl
 		} else {
-			return fmt.Errorf("TestCase FuncDecl is not a valid function declaration: %w", jsonData.FuncDecl)
+			return fmt.Errorf("TestCase FuncDecl is not a valid function declaration: %q", jsonData.FuncDecl)
 		}
 	}
 

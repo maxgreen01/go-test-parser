@@ -23,7 +23,7 @@ type ScenarioSet struct {
 	DataStructure ScenarioDataStructure // describes the type of data structure used to store scenarios
 	Scenarios     []ast.Expr            // the individual scenarios themselves //todo LATER convert to type `[]Scenario`
 
-	Runner *ast.BlockStmt // the actual code that runs the subtest (which is the body of a loop)
+	Runner ast.Stmt // the actual code that runs the subtest (which is expected to be either a `ForStmt` or a `RangeStmt`)
 
 	// Derived analysis results
 	NameField         string   // the name of the field representing each scenario's name, or "map key" if the map key is used as the name
@@ -126,8 +126,12 @@ func (ss *ScenarioSet) detectNameField() string {
 		return ""
 	}
 
-	// If all other cases fail, match field names by substring search
+	// If all other cases fail, match field names by substring search (ensuring the field is a string)
 	for field := range ss.GetFields() {
+		if !asttools.IsBasicType(field.Type(), types.IsString) {
+			// Skip non-string fields
+			continue
+		}
 		lowercase := strings.ToLower(field.Name())
 		if strings.Contains(lowercase, "name") || strings.Contains(lowercase, "desc") {
 			return field.Name()
@@ -170,11 +174,8 @@ func (ss *ScenarioSet) detectFunctionFields() bool {
 
 // Returns a bool indicating whether `t.Run()` is called inside the loop body, as well as a reference to the `t.Run()` statement
 func (ss *ScenarioSet) detectSubtest() (bool, *ast.CallExpr) {
-	if ss.Runner == nil {
-		return false, nil
-	}
-
-	for _, stmt := range ss.Runner.List {
+	statements := ss.GetRunnerStatements()
+	for _, stmt := range statements {
 		if ok, callExpr := asttools.IsSelectorFuncCall(stmt, "t", "Run"); ok {
 			return true, callExpr
 		}
@@ -192,9 +193,30 @@ func (ss *ScenarioSet) detectSubtest() (bool, *ast.CallExpr) {
 // todo note that defining fields like `a, b int` counts as one `Field` element with multiple Names -- need to account for this
 func (ss *ScenarioSet) GetFields() iter.Seq[*types.Var] {
 	if ss.ScenarioTemplate == nil {
-		return nil
+		// Return empty iterator to avoid a panic when trying to range over nil
+		return iter.Seq[*types.Var](func(yield func(*types.Var) bool) {})
 	}
 	return ss.ScenarioTemplate.Fields()
+}
+
+// Returns the statements that make up the loop body
+func (ss *ScenarioSet) GetRunnerStatements() []ast.Stmt {
+	if ss.Runner == nil {
+		return nil
+	}
+
+	var body *ast.BlockStmt
+	switch loop := ss.Runner.(type) {
+	case *ast.RangeStmt:
+		body = loop.Body
+	case *ast.ForStmt:
+		body = loop.Body
+	}
+	if body == nil {
+		return nil
+	}
+
+	return body.List
 }
 
 // Returns whether the detected information in the ScenarioSet is indicative of a table-driven test
@@ -202,7 +224,8 @@ func (ss *ScenarioSet) IsTableDriven() bool {
 	if ss == nil {
 		return false
 	}
-	return ss.DataStructure != ScenarioNoDS && ss.ScenarioTemplate != nil && len(ss.Scenarios) > 0
+	// FIXME NOTE: the two commented conditions counting subtests excludes structures like `map[string]bool`
+	return ss.DataStructure != ScenarioNoDS /* && ss.ScenarioTemplate != nil && len(ss.Scenarios) > 0 */
 }
 
 //

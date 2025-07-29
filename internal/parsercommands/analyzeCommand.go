@@ -134,7 +134,7 @@ func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packa
 		// Write all results to a JSON file
 		err := analysisResult.SaveAsJSON(cmd.output.GetPathDir())
 		if err != nil {
-			slog.Error("saving test case as JSON", "name", tc.TestName, "err", err)
+			slog.Error("saving test case as JSON", "err", err, "test", tc)
 		}
 	}
 }

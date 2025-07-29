@@ -6,15 +6,17 @@ import (
 	"go/types"
 	"log/slog"
 	"slices"
+
+	"github.com/maxgreen01/go-test-parser/pkg/asttools"
 )
 
-// Attempts to extract the table-driven properties of a test case using information extracted from its statements
-func IdentifyScenarioSet(tc *TestCase) *ScenarioSet {
+// Attempts to extract the table-driven properties of a test case using information extracted from its parsed statements
+func IdentifyScenarioSet(tc *TestCase, statements []*ExpandedStatement) *ScenarioSet {
 	if tc == nil {
 		slog.Error("Cannot identify Scenarios in nil TestCase")
 		return nil
 	}
-	stmts := tc.GetStatements()
+	stmts := statements
 	if len(stmts) == 0 {
 		slog.Warn("Cannot identify ScenarioSet because there are no statements", "testCase", tc)
 		return nil
@@ -23,70 +25,97 @@ func IdentifyScenarioSet(tc *TestCase) *ScenarioSet {
 	// Initialize the TestCase's ScenarioSet, whose fields will be populated throughout this method with relevant data
 	ss := &ScenarioSet{TestCase: tc}
 
-	// Iterate in reverse to find the runner loop before trying to find the scenarios
+	// Iterate test statements in reverse to find the runner loop before trying to find the scenarios
 	stmtsReversed := slices.Clone(stmts)
 	slices.Reverse(stmtsReversed)
-stmtLoop:
-	for _, stmt := range stmtsReversed {
-		// Extract the loop that runs the subtests
-		if ss.Runner == nil {
-			// Detect the loop itself
-			if rangeStmt, ok := stmt.(*ast.RangeStmt); ok {
-				slog.Debug("Found range statement in test case", "testCase", tc.TestName)
-
-				// Make sure the loop ranges over a valid data structure, and save it if so
-				ss.detectScenarioDataStructure(tc.TypeOf(rangeStmt.X))
-
-				if ss.DataStructure == ScenarioNoDS {
-					// Can't do anything if the loop data structure is unknown
-					slog.Debug("Detected a range loop in test case, but the data structure is unknown", "testCase", tc)
-					continue stmtLoop // Try checking for additional loops
-				}
-
-				// Check if the scenario data structure is defined directly in the range statement
-				if _, ok := rangeStmt.X.(*ast.CompositeLit); ok {
-					scenariosDefinedInLoop := ss.IdentifyScenarios(rangeStmt.X, tc)
-					if scenariosDefinedInLoop {
-						slog.Debug("Found scenario definition directly in the range statement", "testCase", tc, "scenarios", len(ss.Scenarios))
-					}
-				}
-
-				ss.Runner = rangeStmt.Body
-
-				continue stmtLoop // Move to the next statement
-			}
-
-			// todo LATER add support for `for-i` loops
-			//  else if forStmt, ok := stmt.(*ast.ForStmt); ok {
-			// 	slog.Debug("Found loop statement in test case", "test", t.Name)
-			// 	t.TableDrivenType += ", with for loop"
-			// 	detectTRun(forStmt.Body)
-			// }
+outerStmtLoop:
+	for _, expanded := range stmtsReversed {
+		if expanded == nil {
+			slog.Warn("Encountered nil statement in test case", "testCase", tc)
+			continue outerStmtLoop
 		}
 
-		// Search for variable assignments matching the detected scenario data structure, with the goal of finding the scenario definitions
-		if ss.Scenarios == nil && ss.ScenarioTemplate != nil {
-			if assignStmt, ok := stmt.(*ast.AssignStmt); ok {
-				for _, expr := range assignStmt.Rhs {
-					found := ss.IdentifyScenarios(expr, tc)
-					if found {
-						slog.Debug("Found scenario definition in function body", "testCase", tc, "scenarios", len(ss.Scenarios))
-						continue stmtLoop // Move to the next statement
+		// Iterate over each component of the expanded statement, i.e. look into expanded helper functions
+		for stmt := range expanded.All() {
+			// Extract the loop that runs the subtests
+			if ss.Runner == nil {
+				// Detect the loop itself
+				if rangeStmt, ok := stmt.(*ast.RangeStmt); ok {
+					slog.Debug("Found range statement in test case", "testCase", tc.TestName)
+
+					// Make sure the loop ranges over a valid data structure, and save it if so
+					ss.detectScenarioDataStructure(tc.TypeOf(rangeStmt.X))
+
+					if ss.DataStructure == ScenarioNoDS {
+						// Can't do anything if the loop data structure is unknown
+						slog.Debug("Detected a range loop in test case, but the data structure is unknown", "testCase", tc)
+						continue outerStmtLoop // Try checking for additional loops
+					}
+
+					// Check if the scenario data structure is defined directly in the range statement
+					if _, ok := rangeStmt.X.(*ast.CompositeLit); ok {
+						scenariosDefinedInLoop := ss.IdentifyScenarios(rangeStmt.X, tc)
+						if scenariosDefinedInLoop {
+							slog.Debug("Found scenario definition directly in the range statement", "testCase", tc, "scenarios", len(ss.Scenarios))
+						}
+					}
+
+					ss.Runner = rangeStmt
+
+					continue outerStmtLoop // Move to the next statement
+				}
+
+				// todo LATER add support for `for-i` loops
+				//  else if forStmt, ok := stmt.(*ast.ForStmt); ok {
+				// 	slog.Debug("Found loop statement in test case", "test", t.Name)
+				// 	t.TableDrivenType += ", with for loop"
+				// 	detectTRun(forStmt.Body)
+				// }
+			}
+
+			// Search for variable assignments matching the detected scenario data structure, with the goal of finding the scenario definitions
+			if ss.Scenarios == nil && ss.ScenarioTemplate != nil {
+				switch assignment := stmt.(type) {
+				case *ast.AssignStmt:
+					// Statements like `scenarios := []Scenario{...}`
+					for _, expr := range assignment.Rhs {
+						found := ss.IdentifyScenarios(expr, tc)
+						if found {
+							slog.Debug("Found scenario definition in function body", "testCase", tc, "scenarios", len(ss.Scenarios))
+							continue outerStmtLoop // Move to the next statement
+						}
+					}
+				case *ast.DeclStmt:
+					// Statements like `var scenarios = []Scenario{...}`
+					// todo CLEANUP mostly the same code as checking in file decls below
+					if genDecl, ok := assignment.Decl.(*ast.GenDecl); ok && genDecl.Tok == token.VAR {
+						// Loop over the right-hand side expressions of each variable declaration
+						for _, spec := range genDecl.Specs {
+							if valueSpec, ok := spec.(*ast.ValueSpec); ok {
+								for _, expr := range valueSpec.Values {
+									found := ss.IdentifyScenarios(expr, tc)
+									if found {
+										slog.Debug("Found scenario definition in function body", "testCase", tc, "scenarios", len(ss.Scenarios))
+										continue outerStmtLoop // Move to the next statement
+									}
+								}
+							}
+						}
 					}
 				}
 			}
-		}
-	} // end of loop over function statements
+		} // end of loop over expanded statement components
+	} // end of loop over expanded statements
 
 	// If the loop was found but the Scenario definitions were not, check the file declarations in case they were defined outside the function
 	if ss.Scenarios == nil && ss.ScenarioTemplate != nil {
 		slog.Debug("No scenarios found in the test case, checking file declarations", "testCase", tc)
 
-		if tc.File() == nil {
+		if tc.GetFile() == nil {
 			slog.Error("Cannot check file declarations because File is nil", "testCase", tc)
 		} else {
 		declLoop:
-			for _, decl := range tc.File().Decls {
+			for _, decl := range tc.GetFile().Decls {
 				if genDecl, ok := decl.(*ast.GenDecl); ok {
 					if genDecl.Tok != token.VAR {
 						continue declLoop // Only check variable declarations
@@ -131,13 +160,13 @@ func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (ScenarioData
 
 	case *types.Slice:
 		// Check for []struct
-		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
+		if structType, ok := asttools.Unpointer(x.Elem()).Underlying().(*types.Struct); ok {
 			ss.DataStructure, ss.ScenarioTemplate = ScenarioStructListDS, structType
 			return ss.DataStructure, ss.ScenarioTemplate
 		}
 	case *types.Array:
 		// Check for [N]struct
-		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
+		if structType, ok := asttools.Unpointer(x.Elem()).Underlying().(*types.Struct); ok {
 			ss.DataStructure, ss.ScenarioTemplate = ScenarioStructListDS, structType
 			return ss.DataStructure, ss.ScenarioTemplate
 		}
@@ -145,17 +174,15 @@ func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (ScenarioData
 	case *types.Map:
 		// Check for map[any]struct
 		ss.DataStructure = ScenarioMapDS
-		if structType, ok := x.Elem().Underlying().(*types.Struct); ok {
+		if structType, ok := asttools.Unpointer(x.Elem()).Underlying().(*types.Struct); ok {
 			ss.ScenarioTemplate = structType
 		}
 
 		// todo LATER this would be the place to handle maps with non-struct values, like map[string]bool
 
 		// If the map key is a string, assume it's the scenario name
-		if keyType, ok := x.Key().Underlying().(*types.Basic); ok {
-			if keyType.Kind() == types.String {
-				ss.NameField = "map key"
-			}
+		if asttools.IsBasicType(x.Key().Underlying(), types.IsString) {
+			ss.NameField = "map key"
 		}
 
 		return ss.DataStructure, ss.ScenarioTemplate

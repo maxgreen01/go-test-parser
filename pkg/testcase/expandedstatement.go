@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"iter"
 	"log/slog"
 	"slices"
 	"strings"
@@ -100,7 +101,7 @@ func expandStatementWithStack(stmt ast.Stmt, tc *TestCase, testOnly bool, callSt
 		// Find the definition of the function being called
 		definition, err := FindDefinition(callExpr.Fun, tc, testOnly)
 		if err != nil {
-			slog.Error("Error finding definition for function call", "position", fset.Position(callExpr.Pos()), "err", err)
+			slog.Error("Error finding definition for function call", "err", err, "position", fset.Position(callExpr.Pos()), "test", tc)
 			return false
 		}
 		if definition == nil {
@@ -163,10 +164,16 @@ func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error
 		return expr, nil // not an identifier or selector expression
 	}
 
+	// Don't process expressions that have been added manually (e.g. inside a helper function that has already been refactored)
+	if !ident.Pos().IsValid() {
+		slog.Debug("Ignoring identifier with invalid position", "identifier", ident.Name, "testCase", tc)
+		return nil, nil
+	}
+
 	// Get the type object corresponding to the identifier (i.e. its definition)
 	obj := tc.ObjectOf(ident)
 	if obj == nil {
-		return nil, fmt.Errorf("could not resolve identifier %q in the context %v", ident.Name, tc)
+		return nil, fmt.Errorf("could not resolve identifier %q", ident.Name)
 	}
 	pos := obj.Pos()
 	pkg := obj.Pkg()
@@ -177,7 +184,7 @@ func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error
 		// Universe-scope function
 		slog.Debug("Ignoring universe-scope function", "identifier", ident.Name)
 		return nil, nil
-	} else if pkg.Path() != tc.ImportPath() {
+	} else if pkg.Path() != tc.GetImportPath() {
 		// Function defined outside the current package
 		slog.Debug("Ignoring function defined outside the current package", "identifier", ident.Name, "package", pkg.Path())
 		return nil, nil
@@ -192,25 +199,25 @@ func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error
 
 	// Find the AST file containing the object
 	var definitionFile *ast.File
-	for _, file := range tc.PackageFiles() {
+	for _, file := range tc.GetPackageFiles() {
 		if file.FileStart <= pos && pos <= file.FileEnd {
 			definitionFile = file
 			break
 		}
 	}
 	if definitionFile == nil {
-		return nil, fmt.Errorf("could not find definition file for identifier %q in context %v", ident.Name, tc)
+		return nil, fmt.Errorf("could not find definition file for identifier %q", ident.Name)
 	}
 
 	if testOnly {
 		// Only expand definitions inside test files
 		fset := tc.FileSet()
 		if fset == nil {
-			return nil, fmt.Errorf("could not check definition file path for identifier %q because FileSet is nil in context %v", ident.Name, tc)
+			return nil, fmt.Errorf("could not check definition file path for identifier %q because FileSet is nil", ident.Name)
 		}
 		if !strings.HasSuffix(fset.Position(definitionFile.FileStart).Filename, "_test.go") {
 			// Definition not in a test file
-			slog.Debug("Ignoring identifier definition found outside a test file", "identifier", ident.Name, "context", tc)
+			slog.Debug("Ignoring identifier definition found outside a test file", "identifier", ident.Name, "test", tc)
 			return nil, nil
 		}
 	}
@@ -222,18 +229,46 @@ func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error
 	node := path[0]
 	if _, ok := node.(*ast.File); ok {
 		// Definition not found
-		return nil, fmt.Errorf("could not find definition for identifier %q in context %v", ident.Name, tc)
+		return nil, fmt.Errorf("could not find definition for identifier %q", ident.Name)
 	}
 
 	// The first node is expected to be the original identifier itself, so the second node should be the actual target definition
 	if _, ok := node.(*ast.Ident); ok && len(path) > 1 && path[1] != nil {
 		def := path[1]
-		slog.Debug("Found definition for identifier", "identifier", ident.Name, "position", def.Pos(), "context", tc)
+		slog.Debug("Found definition for identifier", "identifier", ident.Name, "position", def.Pos(), "test", tc)
 		findDefinitionMemo[cacheKey] = def // Store the definition in the memoization cache
 		return def, nil
 	}
 
-	return nil, fmt.Errorf("found definition for identifier %q, but found unexpected results (%v) in context %v", ident.Name, path, tc)
+	return nil, fmt.Errorf("found definition for identifier %q, but found unexpected results", ident.Name)
+}
+
+//
+// ========== Traversal Methods ==========
+//
+
+// Returns an iterator over all the statements contained within the ExpandedStatement
+func (es *ExpandedStatement) All() iter.Seq[ast.Stmt] {
+	return func(yield func(ast.Stmt) bool) {
+		es.push(yield)
+	}
+}
+
+// Pushes all elements of the ExpandedStatement to the provided yield function in a pre-order manner
+func (es *ExpandedStatement) push(yield func(ast.Stmt) bool) bool {
+	if es == nil {
+		return false
+	}
+	// Only perform the operation on the statement itself
+	if !yield(es.Stmt) {
+		return false
+	}
+	for _, child := range es.Children {
+		if !child.push(yield) {
+			return false
+		}
+	}
+	return true
 }
 
 //

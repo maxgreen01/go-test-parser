@@ -34,7 +34,7 @@ func Analyze(tc *TestCase) *AnalysisResult {
 		TestCase: tc,
 	}
 
-	if tc == nil || tc.FuncDecl() == nil || tc.File() == nil {
+	if tc == nil || tc.GetFuncDecl() == nil || tc.GetFile() == nil {
 		slog.Error("Cannot analyze TestCase because it has nil syntax data", "testCase", tc)
 		return nil
 	}
@@ -53,12 +53,12 @@ func Analyze(tc *TestCase) *AnalysisResult {
 	}
 
 	// Populate table-driven test data
-	result.ScenarioSet = IdentifyScenarioSet(tc)
+	result.ScenarioSet = IdentifyScenarioSet(tc, result.ParsedStatements)
 
 	// Extract imported packages from the file's AST
 	var imports []*ast.ImportSpec
-	if tc.File() != nil {
-		imports = tc.File().Imports
+	if tc.GetFile() != nil {
+		imports = tc.GetFile().Imports
 		for _, imp := range imports {
 			result.ImportedPackages = append(result.ImportedPackages, strings.Trim(imp.Path.Value, "\""))
 		}
@@ -90,13 +90,15 @@ func (ar *AnalysisResult) GetCSVHeaders() []string {
 		"package",
 		"name",
 		"scenarioDataStructure",
+		"scenarioCount",
 		"scenarioNameField",
 		"scenarioExpectedFields",
 		"scenarioHasFunctionFields",
 		"scenarioUsesSubtest",
+		"refactorStrategy",
+		"refactorStatus",
 		"importedPackages",
 	}
-	// todo add refactor result fields
 }
 
 // Encode the AnalysisResult as a CSV row, returning the encoded data corresponding to the headers in `GetCSVHeaders()`.
@@ -110,6 +112,7 @@ func (ar *AnalysisResult) EncodeAsCSV() []string {
 	if ss == nil {
 		ss = &ScenarioSet{}
 	}
+	rr := ar.RefactorResult
 
 	return []string{
 		tc.ProjectName,
@@ -117,10 +120,13 @@ func (ar *AnalysisResult) EncodeAsCSV() []string {
 		tc.PackageName,
 		tc.TestName,
 		ss.DataStructure.String(),
+		strconv.Itoa(len(ss.Scenarios)),
 		ss.NameField,
 		strings.Join(ss.ExpectedFields, ", "),
 		strconv.FormatBool(ss.HasFunctionFields),
 		strconv.FormatBool(ss.UsesSubtest),
+		rr.Strategy.String(),
+		rr.Status.String(),
 		strings.Join(ar.ImportedPackages, ", "),
 	}
 }

@@ -74,13 +74,19 @@ func (rm *RefactorStrategy) UnmarshalJSON(data []byte) error {
 type RefactorStatus int
 
 const (
-	RefactorStatusNone    RefactorStatus = iota // No refactoring was attempted
-	RefactorStatusFail                          // Refactoring was attempted but failed
-	RefactorStatusSuccess                       // Refactoring was successful
+	RefactorStatusNone      RefactorStatus = iota // No refactoring was attempted
+	RefactorStatusError                           // Refactoring could not be performed properly due to an unrecoverable error, e.g. due to a logic error
+	RefactorStatusBadFields                       // Refactoring failed based on the configuration of the scenario fields
+	RefactorStatusFail                            // Refactoring failed unexpectedly, e.g. due to an unusual AST structure
+	RefactorStatusSuccess                         // Refactoring was successful
 )
 
 func (rs RefactorStatus) String() string {
 	switch rs {
+	case RefactorStatusError:
+		return "error"
+	case RefactorStatusBadFields:
+		return "badFields"
 	case RefactorStatusFail:
 		return "fail"
 	case RefactorStatusSuccess:
@@ -100,6 +106,10 @@ func (rs *RefactorStatus) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	switch strings.ToLower(str) {
+	case "error":
+		*rs = RefactorStatusError
+	case "badFields":
+		*rs = RefactorStatusBadFields
 	case "fail":
 		*rs = RefactorStatusFail
 	case "success":
@@ -151,7 +161,7 @@ func (rr RefactorResult) ToJSON(fset *token.FileSet) refactorResultJSON {
 // 		if decl, ok := expr.(*ast.FuncDecl); ok {
 // 			funcDecl = decl
 // 		} else {
-// 			return fmt.Errorf("RefactorResult result function is not a valid function declaration: %w", jsonData.Result)
+// 			return fmt.Errorf("RefactorResult result function is not a valid function declaration: %q", jsonData.Result)
 // 		}
 // 	}
 

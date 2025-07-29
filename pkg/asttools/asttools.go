@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"go/types"
 	"log/slog"
 	"reflect"
 )
@@ -122,9 +123,32 @@ func MatchSelectorExpr(expr ast.Expr, owner, name string) bool {
 //
 
 // Creates a selector expression of the form `owner.name`.
-func CreateSelectorExpr(owner, name string) ast.Expr {
+func NewSelectorExpr(owner, name string) ast.Expr {
 	return &ast.SelectorExpr{
-		X:   &ast.Ident{Name: owner},
-		Sel: &ast.Ident{Name: name},
+		X:   ast.NewIdent(owner),
+		Sel: ast.NewIdent(name),
 	}
+}
+
+//
+// ========== Type System Functions ==========
+//
+
+// Returns whether a Type is Basic and has the specified info.
+// See `go/types.Basic` for more details.
+func IsBasicType(typ types.Type, info types.BasicInfo) bool {
+	if basic, ok := typ.Underlying().(*types.Basic); ok {
+		return basic.Info() == info
+	}
+	return false
+}
+
+// Returns T given *T or an alias thereof.
+// For all other types it is the identity function.
+// [copied from `go/typesinternal` package]
+func Unpointer(t types.Type) types.Type {
+	if ptr, ok := t.Underlying().(*types.Pointer); ok {
+		return ptr.Elem()
+	}
+	return t
 }
