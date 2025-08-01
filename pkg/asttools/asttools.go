@@ -6,12 +6,17 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/printer"
 	"go/token"
 	"go/types"
 	"log/slog"
+	"os"
 	"reflect"
+
+	"github.com/go-toolsmith/astequal"
+	"golang.org/x/tools/go/ast/astutil"
 )
 
 //
@@ -92,7 +97,7 @@ func StringToNode(str string) (ast.Node, error) {
 }
 
 //
-// ========== Node Detection Functions ==========
+// ========== Node Detection, Retrieval, and Modification Functions ==========
 //
 
 // Returns a boolean indicating whether a statement is a function call expression of the form `owner.name(...)`,
@@ -118,6 +123,89 @@ func MatchSelectorExpr(expr ast.Expr, owner, name string) bool {
 	return false
 }
 
+// Returns the file containing the given position in the provided package files.
+// Returns nil if none of the provided files contain the position.
+func GetEnclosingFile(pos token.Pos, packageFiles []*ast.File) *ast.File {
+	for _, file := range packageFiles {
+		if file.FileStart <= pos && pos <= file.FileEnd {
+			return file
+		}
+	}
+	return nil
+}
+
+// Returns the function declaration (and corresponding file) enclosing the given position in the provided package files.
+// Returns nil if no function declaration is found, or if none of the provided files contain the position.
+func GetEnclosingFunction(pos token.Pos, packageFiles []*ast.File) (*ast.FuncDecl, *ast.File) {
+	file := GetEnclosingFile(pos, packageFiles)
+	if file == nil {
+		return nil, nil
+	}
+	path, _ := astutil.PathEnclosingInterval(file, pos, pos)
+	for i := len(path) - 1; i >= 0; i-- {
+		// Iterate backward to find the highest-level function declaration first
+		if fn, ok := path[i].(*ast.FuncDecl); ok {
+			return fn, file
+		}
+	}
+	return nil, nil
+}
+
+// Replace the reference to the `old` FuncDecl in its parent file with a reference to the `new` FuncDecl,
+// without modifying either of the FuncDecls themselves. The function must be a top-level declaration in the file.
+// Note that the contents of the functions are not compared, only their names.
+// Returns an error if the replacement was not successful.
+func ReplaceFuncDecl(old, new *ast.FuncDecl, file *ast.File) error {
+	if file == nil {
+		return fmt.Errorf("cannot replace function declaration in nil package")
+	}
+	if old == nil {
+		return fmt.Errorf("cannot replace nil function declaration in package %s", file.Name.Name)
+	}
+	if new == nil {
+		return fmt.Errorf("cannot replace function declaration with nil in package %s", file.Name.Name)
+	}
+
+	for i, decl := range file.Decls {
+		// Match function declarations by name so their contents don't have to match
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == old.Name.Name {
+			// Replace the reference to the old function declaration with the new one
+			file.Decls[i] = new
+			return nil
+		}
+	}
+
+	return fmt.Errorf("could not find function declaration %q in package %s", old.Name.Name, file.Name.Name)
+}
+
+// Return the index of the given statement within a function body, or an error if the statement is not found.
+// The contents of the statement (but not necessarily its underlying pointers) must exactly match a statement in the provided body.
+func FindStmtInBody(stmt ast.Stmt, body []ast.Stmt) (int, error) {
+	if stmt == nil {
+		return -1, fmt.Errorf("cannot find nil stmt in function body")
+	}
+	for i, s := range body {
+		// Deep compare based on contents
+		if astequal.Stmt(stmt, s) {
+			return i, nil
+		}
+	}
+	return -1, fmt.Errorf("could not find stmt in function body")
+}
+
+// Return the i-th statement in the new body, where i is  the index of the provided statement within its own parent body.
+// For example, if the given statement is at index 2 in its parent body, this returns the statement at index 2 in the new body.
+func GetStmtWithSameIndex(stmt ast.Stmt, parentBody, newBody []ast.Stmt) (ast.Stmt, error) {
+	index, err := FindStmtInBody(stmt, parentBody)
+	if err != nil {
+		return nil, fmt.Errorf("finding statement in parent body: %w", err)
+	}
+	if index < 0 || index >= len(newBody) {
+		return nil, fmt.Errorf("statement index %d out of bounds for new body containing %d statements", index, len(newBody))
+	}
+	return newBody[index], nil
+}
+
 //
 // ========== Node Creation Functions ==========
 //
@@ -128,6 +216,35 @@ func NewSelectorExpr(owner, name string) ast.Expr {
 		X:   ast.NewIdent(owner),
 		Sel: ast.NewIdent(name),
 	}
+}
+
+//
+// ========== Output Functions ==========
+//
+
+// Save the contents of the specified AST file to the disk using the specified path, after
+// formatting the AST data with `go/format` using the provided FileSet. Any existing file
+// at the specified path will be overwritten.
+func SaveFileContents(path string, newFile *ast.File, fset *token.FileSet) error {
+	if newFile == nil {
+		return fmt.Errorf("cannot replace file contents with nil AST file")
+	}
+	if fset == nil {
+		return fmt.Errorf("cannot replace file contents because FileSet is nil")
+	}
+
+	// Format the new AST data
+	var buffer bytes.Buffer
+	if err := format.Node(&buffer, fset, newFile); err != nil {
+		return fmt.Errorf("formatting new file contents %q: %w", path, err)
+	}
+
+	// Write to the file
+	if err := os.WriteFile(path, buffer.Bytes(), 0644); err != nil {
+		return fmt.Errorf("writing to file %q: %w", path, err)
+	}
+	slog.Debug("Successfully replaced the contents of file", "file", path)
+	return nil
 }
 
 //

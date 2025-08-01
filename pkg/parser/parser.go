@@ -195,7 +195,7 @@ func parseDir(ctx context.Context, task Task, dir string) error {
 			default:
 			}
 
-			filePath := fset.Position(file.Pos()).Filename
+			filePath := fset.Position(file.FileStart).Filename
 
 			// Skip files in `vendor/` directory
 			if strings.Contains(filePath, filepath.Join("vendor", "")) {

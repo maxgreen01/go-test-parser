@@ -21,7 +21,7 @@ import (
 // Stores input flags for the task, as well as fields representing the data to be collected.
 type AnalyzeCommand struct {
 	// Input flags
-	globals *config.GlobalOptions // Avoid embedding because it flag parser treats this as duplicating the global options
+	globals *config.GlobalOptions // Avoid embedding this because the flag parser would treat it as duplicating the global options
 	analyzeOptions
 
 	// Output file writer
@@ -30,14 +30,15 @@ type AnalyzeCommand struct {
 	// Data fields
 	testCases []*testcase.AnalysisResult // list of analysis results and related metadata for detected test functions
 
-	refactorAttempts  int // total number of test cases that were attempted to be refactored
-	refactorSuccesses int // number of test cases that were successfully refactored in some way
+	refactorAttempts            int // total number of test cases that were attempted to be refactored
+	refactorGenerationSuccesses int // number of test cases that were successfully refactored in some way
+	refactorSuccesses           int // number of test cases whose execution results matched before and after refactoring
 }
 
 // Command-line flags for the Analyze command specifically
 type analyzeOptions struct {
 	// todo LATER/MAYBE make this a slice so multiple refactoring methods can be applied at once
-	RefactorStrategy string `long:"refactor" description:"The type(s) of refactoring to perform on the detected test cases" choice:"none" choice:"subtest" default:"none"`
+	RefactorStrategy string `long:"refactor" description:"The type of refactoring to perform on the detected test cases" choice:"none" choice:"subtest" default:"none"`
 }
 
 // Compile-time interface implementation check
@@ -99,7 +100,7 @@ func (cmd *AnalyzeCommand) Execute(args []string) error {
 func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packages.Package) {
 	projectName := filepath.Base(cmd.globals.ProjectDir)
 	// packageName := file.Name.Name
-	// fileName := fset.Position(file.Pos()).Filename
+	// filePath := fset.Position(file.FileStart).Filename
 
 	// Only iterate top level declarations
 	for _, decl := range file.Decls {
@@ -108,7 +109,7 @@ func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packa
 			continue
 		}
 
-		// slog.Debug("Checking function...", "name", fn.Name.Name, "package", packageName, "file", fileName)
+		// slog.Debug("Checking function...", "name", fn.Name.Name, "package", packageName, "file", filePath)
 
 		// Save the function as a valid test case if it meets all the criteria
 		valid, _ := testcase.IsValidTestCase(fn)
@@ -124,17 +125,27 @@ func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packa
 
 		// Attempt to refactor the test case if a refactoring strategy is specified
 		result := analysisResult.AttemptRefactoring(testcase.RefactorStrategyFromString(cmd.RefactorStrategy))
-		if result.Strategy != testcase.RefactorStrategyNone && result.Status != testcase.RefactorStatusNone {
+
+		// Only count refactoring statistics if a refactoring strategy was specified
+		if result.Strategy != testcase.RefactorStrategyNone && result.GenerationStatus != testcase.RefactorGenerationStatusNone {
+			// A refactoring attempt was made
 			cmd.refactorAttempts++
-			if result.Status == testcase.RefactorStatusSuccess {
-				cmd.refactorSuccesses++
+
+			if result.GenerationStatus == testcase.RefactorGenerationStatusSuccess {
+				// The refactoring generation succeeded
+				cmd.refactorGenerationSuccesses++
+
+				if result.OriginalExecutionResult == result.RefactoredExecutionResult {
+					// The refactoring generation was successful, and the execution results matched
+					cmd.refactorSuccesses++
+				}
 			}
 		}
 
 		// Write all results to a JSON file
 		err := analysisResult.SaveAsJSON(cmd.output.GetPathDir())
 		if err != nil {
-			slog.Error("saving test case as JSON", "err", err, "test", tc)
+			slog.Error("Saving test case as JSON", "err", err, "test", tc)
 		}
 	}
 }
@@ -158,8 +169,9 @@ func (cmd *AnalyzeCommand) ReportResults() error {
 			"\n",
 			fmt.Sprintf("Refactoring strategy: %q\n", cmd.RefactorStrategy),
 			fmt.Sprintf("Refactoring attempts: %d\n", cmd.refactorAttempts),
-			fmt.Sprintf("Refactoring successes: %d\n", cmd.refactorSuccesses),
-			// todo maybe put more here
+			fmt.Sprintf("Refactor generation successes: %d\n", cmd.refactorGenerationSuccesses),
+			fmt.Sprintf("Refactoring successes (with matching execution results): %d\n", cmd.refactorSuccesses),
+			// todo maybe put some table-driven data here
 		)
 	}
 

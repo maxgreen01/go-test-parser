@@ -48,13 +48,11 @@ func main() {
 		}
 
 		// Set up timer hook
-		if opts.Timer {
-			startTime := time.Now()
-			defer func() {
-				// Runs after the command finishes executing
-				slog.Info("Total execution time:", "duration", time.Since(startTime))
-			}()
-		}
+		startTime := time.Now()
+		defer func() {
+			// Runs after the command finishes executing
+			fmt.Printf("Total execution time: %v\n\n", time.Since(startTime))
+		}()
 
 		// Actually execute the command (which starts the parser)
 		if err := command.Execute(args); err != nil {

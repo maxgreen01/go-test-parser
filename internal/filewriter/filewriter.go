@@ -184,7 +184,7 @@ func (writer *FileWriter) Write(data any, otherData ...any) error {
 		return fmt.Errorf("writing data to output file %q: %w", writer.path, err)
 	}
 
-	slog.Info("Data written successfully to file", "outputPath", writer.path)
+	slog.Debug("Data written successfully to file", "outputPath", writer.path)
 	return nil
 }
 
@@ -224,7 +224,7 @@ func (writer *FileWriter) WriteMultiple(data any, otherData ...any) error {
 		}
 	}
 
-	slog.Info("Multiple pieces of data written successfully to file", "count", val.Len(), "outputPath", writer.path)
+	slog.Debug("Multiple pieces of data written successfully to file", "count", val.Len(), "outputPath", writer.path)
 	return nil
 }
 

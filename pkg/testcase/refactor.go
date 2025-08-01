@@ -13,13 +13,17 @@ import (
 // Represents the result of a refactoring attempt on a test case.
 type RefactorResult struct {
 	// The refactoring strategy that was applied, if any
-	Strategy RefactorStrategy
+	Strategy RefactorStrategy `json:"strategy"`
 
-	// The status of the refactoring attempt
-	Status RefactorStatus
+	// The status of the refactor generation attempt
+	GenerationStatus RefactorGenerationStatus `json:"status"`
 
-	// The contents of the refactored test case, if the refactoring was successful
-	Result *ast.FuncDecl
+	// The contents of the refactored test case, if the refactor generation was successful
+	Refactorings []RefactoredFunction `json:"refactorings"`
+
+	// The results of executing the test case before and after refactoring
+	OriginalExecutionResult   TestExecutionResult `json:"originalTestResult"`
+	RefactoredExecutionResult TestExecutionResult `json:"refactoredTestResult"`
 }
 
 //
@@ -70,106 +74,114 @@ func (rm *RefactorStrategy) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Represents the status of a refactoring attempt on a test case.
-type RefactorStatus int
+// Represents the status of an attempt to generate refactored code for a test case.
+type RefactorGenerationStatus int
 
 const (
-	RefactorStatusNone      RefactorStatus = iota // No refactoring was attempted
-	RefactorStatusError                           // Refactoring could not be performed properly due to an unrecoverable error, e.g. due to a logic error
-	RefactorStatusBadFields                       // Refactoring failed based on the configuration of the scenario fields
-	RefactorStatusFail                            // Refactoring failed unexpectedly, e.g. due to an unusual AST structure
-	RefactorStatusSuccess                         // Refactoring was successful
+	RefactorGenerationStatusNone      RefactorGenerationStatus = iota // No refactoring was attempted
+	RefactorGenerationStatusError                                     // Refactoring could not be performed properly due to an unrecoverable error, e.g. due to a logic error
+	RefactorGenerationStatusBadFields                                 // Refactoring failed based on the configuration of the scenario fields
+	RefactorGenerationStatusFail                                      // Refactoring failed unexpectedly, e.g. due to an unusual AST structure
+	RefactorGenerationStatusSuccess                                   // Refactoring was successful
 )
 
-func (rs RefactorStatus) String() string {
+func (rs RefactorGenerationStatus) String() string {
 	switch rs {
-	case RefactorStatusError:
+	case RefactorGenerationStatusNone:
+		return "none"
+	case RefactorGenerationStatusError:
 		return "error"
-	case RefactorStatusBadFields:
+	case RefactorGenerationStatusBadFields:
 		return "badFields"
-	case RefactorStatusFail:
+	case RefactorGenerationStatusFail:
 		return "fail"
-	case RefactorStatusSuccess:
+	case RefactorGenerationStatusSuccess:
 		return "success"
 	default:
-		return "none"
+		return "unknown"
 	}
 }
 
-func (rs RefactorStatus) MarshalJSON() ([]byte, error) {
+func (rs RefactorGenerationStatus) MarshalJSON() ([]byte, error) {
 	return json.Marshal(rs.String())
 }
 
-func (rs *RefactorStatus) UnmarshalJSON(data []byte) error {
+func (rs *RefactorGenerationStatus) UnmarshalJSON(data []byte) error {
 	var str string
 	if err := json.Unmarshal(data, &str); err != nil {
 		return err
 	}
 	switch strings.ToLower(str) {
-	case "error":
-		*rs = RefactorStatusError
-	case "badFields":
-		*rs = RefactorStatusBadFields
-	case "fail":
-		*rs = RefactorStatusFail
-	case "success":
-		*rs = RefactorStatusSuccess
 	case "none":
-		*rs = RefactorStatusNone
+		*rs = RefactorGenerationStatusNone
+	case "error":
+		*rs = RefactorGenerationStatusError
+	case "badFields":
+		*rs = RefactorGenerationStatusBadFields
+	case "fail":
+		*rs = RefactorGenerationStatusFail
+	case "success":
+		*rs = RefactorGenerationStatusSuccess
 	default:
 		slog.Warn("Unknown refactoring strategy", "strategy", str)
-		*rs = RefactorStatusNone
+		*rs = RefactorGenerationStatusNone
 	}
 	return nil
 }
 
-//
-// ========== Output Methods ==========
-//
+// Represents function declaration that has been refactored.
+// Note that the AST file is not guaranteed to retain the modified function data after Cleanup is called,
+// but it should still be retained by the FuncDecl reference (and by the string forms of these AST elements).
+type RefactoredFunction struct {
+	Refactored       *ast.FuncDecl `json:"-"`          // The actual refactored function declaration
+	RefactoredString string        `json:"refactored"` // The string representation of the refactored function declaration
 
-// Helper struct for Marshaling and Unmarshaling JSON.
-type refactorResultJSON struct {
-	Strategy RefactorStrategy `json:"strategy"`
-	Status   RefactorStatus   `json:"status"`
-	Result   string           `json:"result"`
+	File     *ast.File `json:"-"`        // The AST file where the refactored function is defined
+	FilePath string    `json:"filePath"` // The path to the file containing the refactored function
+
+	cleanup func() error // A function to restore the original function declaration if necessary
+	// todo CLEANUP maybe replace with storing the original AST function and file and performing the cleanup based on that
 }
 
-// Convert the RefactorResult to a JSON representation.
-func (rr RefactorResult) ToJSON(fset *token.FileSet) refactorResultJSON {
-	return refactorResultJSON{
-		Strategy: rr.Strategy,
-		Status:   rr.Status,
-		Result:   asttools.NodeToString(rr.Result, fset),
+// Creates a new RefactoredFunction with the provided AST data.
+func NewRefactoredFunction(fn *ast.FuncDecl, file *ast.File, cleanupFunc func() error, fset *token.FileSet) *RefactoredFunction {
+	if fn == nil || file == nil {
+		slog.Error("Cannot create RefactoredFunction with nil syntax data", "funcDecl", fn, "file", file)
+		return nil
+	}
+	if fset == nil {
+		slog.Error("Cannot create RefactoredFunction with nil FileSet", "funcDecl", fn, "file", file)
+		return nil
+	}
+
+	return &RefactoredFunction{
+		Refactored:       fn,
+		RefactoredString: asttools.NodeToString(fn, fset),
+
+		File:     file,
+		FilePath: fset.Position(file.FileStart).Filename,
+
+		cleanup: cleanupFunc,
 	}
 }
 
-// Convert the JSON representation of a RefactorResult back to its original form.
-// FIXME FIGURE OUT HOW TO DECODE RefactorResult!
-// func (rr *refactorResultJSON) FromJSON(data []byte, fset *token.FileSet) error {
-// 	var jsonData refactorResultJSON
-// 	if err := json.Unmarshal(data, &jsonData); err != nil {
-// 		return err
-// 	}
+// Performs an in-place update of the string representation of the refactored AST function declaration
+// already stored in the RefactoredFunction, using the provided FileSet.
+func (rf *RefactoredFunction) UpdateStringRepresentation(fset *token.FileSet) {
+	if rf.Refactored == nil || rf.File == nil || fset == nil {
+		slog.Error("Cannot update RefactoredFunction strings with nil syntax data", "refactored", rf.Refactored, "file", rf.File)
+		return
+	}
+	rf.RefactoredString = asttools.NodeToString(rf.Refactored, fset)
+}
 
-// 	// Try to decode AST fields
-// 	var funcDecl *ast.FuncDecl
-// 	expr, err := asttools.StringToNode(jsonData.Result)
-// 	if err != nil {
-// 		return fmt.Errorf("parsing RefactorResult result function from JSON: %w", err)
-// 	} else {
-// 		// Only check the type if the string was parsed successfully
-// 		if decl, ok := expr.(*ast.FuncDecl); ok {
-// 			funcDecl = decl
-// 		} else {
-// 			return fmt.Errorf("RefactorResult result function is not a valid function declaration: %q", jsonData.Result)
-// 		}
-// 	}
+// Cleans up the refactored function by restoring the original function declaration, if possible.
+func (rf *RefactoredFunction) Cleanup() {
+	if rf.cleanup != nil {
+		if err := rf.cleanup(); err != nil {
+			slog.Error("Error cleaning up refactored function", "err", err, "function", rf.Refactored.Name.Name, "filePath", rf.FilePath)
+		}
+	}
+}
 
-// 	// Save data into the main struct
-// 	*rr = RefactorResult{
-// 		Strategy: jsonData.Strategy,
-// 		Status:   jsonData.Status,
-// 		Result:   funcDecl,
-// 	}
-// 	return nil
-// }
+// todo LATER - maybe add a way to unmarshal the original Refactored

@@ -1,7 +1,6 @@
 package testcase
 
 import (
-	"encoding/json"
 	"fmt"
 	"go/ast"
 	"log/slog"
@@ -96,7 +95,9 @@ func (ar *AnalysisResult) GetCSVHeaders() []string {
 		"scenarioHasFunctionFields",
 		"scenarioUsesSubtest",
 		"refactorStrategy",
-		"refactorStatus",
+		"refactorGenerationStatus",
+		"originalExecutionResult",
+		"refactoredExecutionResult",
 		"importedPackages",
 	}
 }
@@ -126,7 +127,9 @@ func (ar *AnalysisResult) EncodeAsCSV() []string {
 		strconv.FormatBool(ss.HasFunctionFields),
 		strconv.FormatBool(ss.UsesSubtest),
 		rr.Strategy.String(),
-		rr.Status.String(),
+		rr.GenerationStatus.String(),
+		rr.OriginalExecutionResult.String(),
+		rr.RefactoredExecutionResult.String(),
 		strings.Join(ar.ImportedPackages, ", "),
 	}
 }
@@ -145,62 +148,5 @@ func (ar *AnalysisResult) SaveAsJSON(dir string) error {
 	if err != nil {
 		return fmt.Errorf("saving analysis results for test case %q as JSON: %w", tc.TestName, err)
 	}
-
-	slog.Info("Saved test case analysis results as JSON", "filePath", path)
 	return nil
 }
-
-// Helper struct for Marshaling and Unmarshaling JSON
-type analysisResultJSON struct {
-	TestCase *TestCase `json:"testCase"`
-
-	ScenarioSet      *ScenarioSet         `json:"scenarioSet"`
-	ParsedStatements []*ExpandedStatement `json:"parsedStatements"`
-	ImportedPackages []string             `json:"importedPackages"`
-
-	RefactorResult refactorResultJSON `json:"refactorResult"`
-}
-
-// Marshal a TestCase for JSON output
-func (ar *AnalysisResult) MarshalJSON() ([]byte, error) {
-	if ar == nil || ar.TestCase == nil {
-		// Can't do anything with improperly initialized AnalysisResult, so return empty JSON data
-		return json.Marshal(analysisResultJSON{})
-	}
-
-	return json.Marshal(analysisResultJSON{
-		TestCase: ar.TestCase,
-
-		ScenarioSet:      ar.ScenarioSet,
-		ParsedStatements: ar.ParsedStatements,
-		ImportedPackages: ar.ImportedPackages,
-
-		RefactorResult: ar.RefactorResult.ToJSON(ar.TestCase.FileSet()),
-	})
-}
-
-// Unmarshal a TestCase from JSON
-// FIXME FIGURE OUT HOW TO DECODE RefactorResult!
-// func (result *AnalysisResult) UnmarshalJSON(data []byte) error {
-// 	var jsonData analysisResultJSON
-// 	if err := json.Unmarshal(data, &jsonData); err != nil {
-// 		return err
-// 	}
-
-// 	// Unmarshal the RefactorResult
-// 	if err := result.RefactorResult.FromJSON(jsonData.RefactorResult, result.TestCase.FileSet()); err != nil {
-// 		return fmt.Errorf("unmarshaling RefactorResult: %w", err)
-// 	}
-
-// 	// Save data into the main struct
-// 	*result = AnalysisResult{
-// 		TestCase: jsonData.TestCase,
-
-// 		ScenarioSet:      jsonData.ScenarioSet,
-// 		ParsedStatements: jsonData.ParsedStatements,
-// 		ImportedPackages: jsonData.ImportedPackages,
-
-// 		RefactorResult: result.RefactorResult,
-// 	}
-// 	return nil
-// }

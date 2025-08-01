@@ -112,13 +112,18 @@ func expandStatementWithStack(stmt ast.Stmt, tc *TestCase, testOnly bool, callSt
 		// Detect the function's name and inner statements
 		var funcName string
 		var innerStmts []ast.Stmt
-		switch definition := definition.(type) {
+		switch funcDef := definition.Node.(type) {
 		case *ast.FuncDecl:
-			funcName = definition.Name.Name
-			innerStmts = definition.Body.List
+			funcName = funcDef.Name.Name
+			innerStmts = funcDef.Body.List
 		case *ast.FuncLit:
-			funcName = fmt.Sprintf("funcLit@%s", fset.Position(definition.Pos())) // Use the position as a unique identifier
-			innerStmts = definition.Body.List
+			funcName = fmt.Sprintf("funcLit@%s", fset.Position(funcDef.Pos())) // Use the position as a unique identifier
+			innerStmts = funcDef.Body.List
+
+		default:
+			// Function body can't be accessed normally (maybe func is declared with `var` then defined later), so don't expand it
+			slog.Debug("Skipping expansion of function without obvious body", "nodeType", fmt.Sprintf("%T", funcDef), "test", tc)
+			return false
 		}
 
 		// Avoid expanding recursive functions by checking the callstack
@@ -140,16 +145,26 @@ func expandStatementWithStack(stmt ast.Stmt, tc *TestCase, testOnly bool, callSt
 	return root
 }
 
+// Represents the definition of an expression as found by FindDefinition.
+type ExpressionDefinition struct {
+	// The AST node representing the actual expression definition
+	Node ast.Node
+
+	// The AST file that contains the definition, or nil if it was not found
+	File *ast.File
+}
+
 // Memoization cache for FindDefinition to avoid redundant lookups.
 // Keys are strings formatted as "<position>-<project>-<package>-<testOnly>".
-var findDefinitionMemo = make(map[string]ast.Node)
+var findDefinitionMemo = make(map[string]*ExpressionDefinition)
 
-// Return the AST definition of the expression within the specified TestCase's package, if it exists.
+// Return the AST definition and of the expression within the specified TestCase's package, if it exists.
+// Also returns the AST file that contains the definition if it is successfully found, or nil in all other cases.
 // If the expression is not an identifier or selector expression, returns the original expression.
 // Returns nil for both return values (indicating that the definition was deliberately excluded) in the following cases:
 //   - The expression is not defined in the specified context package
 //   - If `testOnly` is true and the expression is not defined in a file with a `_test.go` suffix
-func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error) {
+func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (*ExpressionDefinition, error) {
 	if tc == nil {
 		return nil, fmt.Errorf("TestCase is nil")
 	}
@@ -161,7 +176,7 @@ func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error
 	case *ast.SelectorExpr:
 		ident = x.Sel
 	default:
-		return expr, nil // not an identifier or selector expression
+		return &ExpressionDefinition{Node: expr}, nil // not an identifier or selector expression
 	}
 
 	// Don't process expressions that have been added manually (e.g. inside a helper function that has already been refactored)
@@ -192,19 +207,13 @@ func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error
 
 	// Check the memoization cache to see if the definition has already been found
 	cacheKey := fmt.Sprintf("%d-%s-%s-%v", pos, tc.PackageName, tc.ProjectName, testOnly)
-	if node, ok := findDefinitionMemo[cacheKey]; ok {
+	if cached, ok := findDefinitionMemo[cacheKey]; ok {
 		// Definition already found, so return it
-		return node, nil
+		return cached, nil
 	}
 
 	// Find the AST file containing the object
-	var definitionFile *ast.File
-	for _, file := range tc.GetPackageFiles() {
-		if file.FileStart <= pos && pos <= file.FileEnd {
-			definitionFile = file
-			break
-		}
-	}
+	definitionFile := asttools.GetEnclosingFile(pos, tc.GetPackageFiles())
 	if definitionFile == nil {
 		return nil, fmt.Errorf("could not find definition file for identifier %q", ident.Name)
 	}
@@ -218,6 +227,7 @@ func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error
 		if !strings.HasSuffix(fset.Position(definitionFile.FileStart).Filename, "_test.go") {
 			// Definition not in a test file
 			slog.Debug("Ignoring identifier definition found outside a test file", "identifier", ident.Name, "test", tc)
+			findDefinitionMemo[cacheKey] = nil // Store the result in the memoization cache
 			return nil, nil
 		}
 	}
@@ -225,8 +235,10 @@ func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error
 	// Get the AST node corresponding to the object, plus its ancestors
 	path, _ := astutil.PathEnclosingInterval(definitionFile, pos, pos)
 
-	// Resulting path should never be empty, so check the first element
+	// Check the first element for the desired result (note that the path is never empty)
 	node := path[0]
+
+	// If the first node is a file, it means the identifier definition could not be found
 	if _, ok := node.(*ast.File); ok {
 		// Definition not found
 		return nil, fmt.Errorf("could not find definition for identifier %q", ident.Name)
@@ -234,10 +246,11 @@ func FindDefinition(expr ast.Expr, tc *TestCase, testOnly bool) (ast.Node, error
 
 	// The first node is expected to be the original identifier itself, so the second node should be the actual target definition
 	if _, ok := node.(*ast.Ident); ok && len(path) > 1 && path[1] != nil {
-		def := path[1]
-		slog.Debug("Found definition for identifier", "identifier", ident.Name, "position", def.Pos(), "test", tc)
-		findDefinitionMemo[cacheKey] = def // Store the definition in the memoization cache
-		return def, nil
+		definition := &ExpressionDefinition{Node: path[1], File: definitionFile}
+		slog.Debug("Found definition for identifier", "identifier", ident.Name, "position", definition.Node.Pos(), "test", tc)
+
+		findDefinitionMemo[cacheKey] = definition // Store the definition in the memoization cache
+		return definition, nil
 	}
 
 	return nil, fmt.Errorf("found definition for identifier %q, but found unexpected results", ident.Name)

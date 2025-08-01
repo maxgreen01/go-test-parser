@@ -21,7 +21,7 @@ import (
 // Stores input flags for the task, as well as fields representing the data to be collected.
 type StatisticsCommand struct {
 	// Input flags
-	globals *config.GlobalOptions // Avoid embedding because it flag parser treats this as duplicating the global options
+	globals *config.GlobalOptions // Avoid embedding this because the flag parser would treat it as duplicating the global options
 	statisticsOptions
 
 	// Output file writer
@@ -96,14 +96,14 @@ func (cmd *StatisticsCommand) Execute(args []string) error {
 func (cmd *StatisticsCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packages.Package) {
 	projectName := filepath.Base(cmd.globals.ProjectDir)
 	packageName := file.Name.Name
-	fileName := fset.Position(file.Pos()).Filename
+	fileName := fset.Position(file.FileStart).Filename
 
 	// increment project-scale statistics
 	cmd.totalFileCount++
 	if strings.HasSuffix(fileName, "_test.go") {
 		cmd.testFileCount++
 	}
-	cmd.totalLines += fset.Position(file.End()).Line - fset.Position(file.Pos()).Line + 1
+	cmd.totalLines += fset.Position(file.End()).Line - fset.Position(file.FileStart).Line + 1
 
 	// Only iterate top level declarations
 	for _, decl := range file.Decls {

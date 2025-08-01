@@ -7,10 +7,10 @@ An advanced research tool for identifying and analyzing unit tests in Go project
 
 ## Features
 
--   Parse and analyze Go test files.
--   Generate detailed reports on test statistics and analysis.
--   Support for various output formats, including CSV and plaintext.
--   Structured logging multiplexed to the terminal and `testparser.log`.
+- Parse and analyze Go test files.
+- Generate detailed reports on test statistics and analysis.
+- Support for various output formats, including CSV and plaintext.
+- Structured logging multiplexed to the terminal and `testparser.log`.
 
 ## Quick Start
 
@@ -36,7 +36,6 @@ Below is a list of the command-line options supported by the application:
 | `--splitByDir`      | Whether to parse each top-level directory separately                                   | `false`       | N/a                                            |
 | `--threads`         | The number of concurrent threads to use for parsing (only when splitting by directory) | `4`           | `2`, `8`                                       |
 | `--logLevel` / `-l` | The minimum severity of log message that should be displayed                           | `info`        | `debug`, `info`, `warn`, `error` (exhaustive)  |
-| `--timer`           | Whether to print the total execution time of the specified task                        | `false`       | N/a                                            |
 
 To access the help menu and see all available options, run:
 
@@ -78,13 +77,14 @@ Example:
 
 The following command-line options are only supported by the `analyze` command.
 
-| Option       | Description                                                                                     | Default Value | Example Argument               |
-| ------------ | ----------------------------------------------------------------------------------------------- | ------------- | ------------------------------ |
-| `--refactor` | The type of refactoring to perform on the detected test cases. See below for additional details | `none`        | `none`, `subtest` (exhaustive) |
+| Option                    | Description                                                                                     | Default Value | Example Argument               |
+| ------------------------- | ----------------------------------------------------------------------------------------------- | ------------- | ------------------------------ |
+| `--refactor`              | The type of refactoring to perform on the detected test cases. See below for additional details | `none`        | `none`, `subtest` (exhaustive) |
 
-The `refactor` command indicates which type of refactoring should be performed on certain detected test cases. Refactoring does not modify the original source files, but instead saves the entire refactored function as a field in the JSON output file for each affected test case. If the `none` argument is specified, no refactoring will be performed.
+The `refactor` command indicates which type of refactoring should be performed on certain detected test cases. After refactoring, the refactored function is saved as a field in the JSON output file for each affected test case. Note that the refactoring may modify helper functions defined in the same package, but these are not reflected in the JSON output. The allowed refactoring strategies are described as follows:
 
-The `subtest` refactoring method affects tests that are detected to be table-driven but do not use `t.Run()` to declare subtests. The refactoring wraps the entire contents of the execution loop in a `t.Run()` call, using the detected scenario name field (or a stringified version of one of the input fields) as the subtest name.
+- The `none` argument indicates that no refactoring will be performed.
+- The `subtest` refactoring method affects tests that are detected to be table-driven but do not use `t.Run()` to declare subtests. The refactoring wraps the entire contents of the execution loop in a `t.Run()` call, using the detected scenario name field (or a stringified version of one of the input fields) as the subtest name.
 
 ## Contributing
 

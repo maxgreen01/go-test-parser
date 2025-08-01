@@ -92,6 +92,7 @@ func (ss *ScenarioSet) Analyze() {
 	ss.UsesSubtest, _ = ss.detectSubtest()
 
 	// todo LATER consider expanding the statements inside the runner loop, just like with TestCase statements
+	//     since TestCase already expands all statements, we can probably store a copy of the corresponding statement without recomputing
 }
 
 // Returns the name of the field representing the name of each scenario
