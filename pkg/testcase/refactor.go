@@ -81,6 +81,7 @@ const (
 	RefactorGenerationStatusNone      RefactorGenerationStatus = iota // No refactoring was attempted
 	RefactorGenerationStatusError                                     // Refactoring could not be performed properly due to an unrecoverable error, e.g. due to a logic error
 	RefactorGenerationStatusBadFields                                 // Refactoring failed based on the configuration of the scenario fields
+	RefactorGenerationStatusNoTester                                  // Refactoring failed because a `*testing.T` variable could not be detected
 	RefactorGenerationStatusFail                                      // Refactoring failed unexpectedly, e.g. due to an unusual AST structure
 	RefactorGenerationStatusSuccess                                   // Refactoring was successful
 )
@@ -93,6 +94,8 @@ func (rs RefactorGenerationStatus) String() string {
 		return "error"
 	case RefactorGenerationStatusBadFields:
 		return "badFields"
+	case RefactorGenerationStatusNoTester:
+		return "noTester"
 	case RefactorGenerationStatusFail:
 		return "fail"
 	case RefactorGenerationStatusSuccess:
@@ -118,6 +121,8 @@ func (rs *RefactorGenerationStatus) UnmarshalJSON(data []byte) error {
 		*rs = RefactorGenerationStatusError
 	case "badFields":
 		*rs = RefactorGenerationStatusBadFields
+	case "noTester":
+		*rs = RefactorGenerationStatusNoTester
 	case "fail":
 		*rs = RefactorGenerationStatusFail
 	case "success":
@@ -184,4 +189,4 @@ func (rf *RefactoredFunction) Cleanup() {
 	}
 }
 
-// todo LATER - maybe add a way to unmarshal the original Refactored
+// todo LATER - maybe add a way to unmarshal the original Refactored AST field

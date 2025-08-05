@@ -5,17 +5,22 @@ package testcase
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 	"log/slog"
 	"os"
 
 	"github.com/go-toolsmith/astcopy"
 	"github.com/maxgreen01/go-test-parser/pkg/asttools"
+	"golang.org/x/tools/go/ast/astutil"
 )
 
 // Attempts to refactor a test case using the specified strategy.
+// If a refactoring is successfully generated, the test is executed using the original and refactored code.
+// The default behavior is to restore the original file contents after the refactoring is complete, but this
+// can be disabled by setting `keepRefactoredFiles` to true.
 // Saves the result of the refactoring attempt to the AnalysisResult, and also returns a copy of the result.
-func (ar *AnalysisResult) AttemptRefactoring(strategy RefactorStrategy) RefactorResult {
+func (ar *AnalysisResult) AttemptRefactoring(strategy RefactorStrategy, keepRefactoredFiles bool) RefactorResult {
 	if ar == nil {
 		slog.Error("Attempted to refactor a nil AnalysisResult", "strategy", strategy)
 		return RefactorResult{Strategy: strategy, GenerationStatus: RefactorGenerationStatusFail}
@@ -126,16 +131,25 @@ func (ar *AnalysisResult) AttemptRefactoring(strategy RefactorStrategy) Refactor
 		}
 	}
 	rr.RefactoredExecutionResult = refactoredExecResult
+	if rr.OriginalExecutionResult != rr.RefactoredExecutionResult {
+		slog.Warn("Refactored test case execution results do not match original results", "original", rr.OriginalExecutionResult, "refactored", rr.RefactoredExecutionResult, "test", tc)
+	}
 
 	// Restore the original file contents on the disk to ensure that refactorings don't interfere with each other
 	for _, refactoring := range rr.Refactorings {
-		// Write the original file contents back to the disk
-		if err := os.WriteFile(refactoring.FilePath, originalFileContents[refactoring.FilePath], 0644); err != nil {
-			slog.Error("Error restoring original test file contents after refactoring", "err", err, "test", tc)
-			return *rr
+		if !keepRefactoredFiles {
+			// Write the original file contents back to the disk
+			if err := os.WriteFile(refactoring.FilePath, originalFileContents[refactoring.FilePath], 0644); err != nil {
+				slog.Error("Error restoring original test file contents after refactoring", "err", err, "test", tc)
+				return *rr
+			}
 		}
 
-		// Restore the original AST File data (and any dependents) to ensure that refactorings don't interfere with each other
+		// Restore the original AST File data (and any dependents) to ensure that refactorings don't interfere with each other.
+		// Even if the file contents are retained on the disk, we need to revert the AST data to keep tests independent.
+		// Note that the Parser finished generating the AST structures long before this point, so the data on the disk won't
+		// affect the underlying AST which is actually used for analysis. However, disk changes may affect test execution,
+		// especially if any of the previous refactoring attempts cause compilation issues.
 		refactoring.Cleanup()
 	}
 
@@ -150,20 +164,25 @@ func (ar *AnalysisResult) AttemptRefactoring(strategy RefactorStrategy) Refactor
 // analysis results are not affected if the helper is used by any other tests. The cleanup of these copy changes
 // is handled by AttemptRefactoring so that they can be saved  Note that type information from
 // `go/types` is NOT available for these copies since the underlying pointer values are different than the originals.
-// TODO LATER - this AST copying behavior is only present when expanding helper statements, not necessarily when finding definitions or using the type system
 //
 
+// TODO LATER - this AST copying behavior is only present when expanding helper statements, not necessarily when finding definitions or using the type system.
+//    This is actually necessary for saving the refactoring results on disk because regular test functions are NOT reverted in the AST, which means their
+//    changes are preserved between multiple refactorings, even though the same is not true for helper functions.
+//    However, this can cause trouble when using `keepRefactoredFiles` because tests that cause compile errors may affect the execution of other tests in the same file.
+
 // Refactors the test case to use subtests by wrapping the execution loop body in a call to `t.Run()`.
-// Returns a one-element list containing the updated function if successful, as well as the status of
-// the refactor generation attempt and any error that may have occurred.
+// Also attempts to replace `continue` statements in the runner (except when inside another loop) with `return` to pass the test.
+// Returns a one-element list containing the updated function if successful, as well as the status of the refactor
+// generation attempt and any error that may have occurred.
 func (ar *AnalysisResult) refactorToSubtests() ([]RefactoredFunction, RefactorGenerationStatus, error) {
 	tc := ar.TestCase
 	if tc == nil || tc.funcDecl == nil {
-		return nil, RefactorGenerationStatusError, fmt.Errorf("cannot refactor a test case that has no function declaration")
+		return nil, RefactorGenerationStatusError, fmt.Errorf("cannot refactor test case that has no function declaration")
 	}
 	ss := ar.ScenarioSet
 	if ss == nil {
-		return nil, RefactorGenerationStatusError, fmt.Errorf("cannot refactor a test case that is not table-driven")
+		return nil, RefactorGenerationStatusError, fmt.Errorf("cannot refactor test case that is not table-driven")
 	}
 
 	// If the modified nodes are in a helper function, perform the refactoring on a copy to avoid modifying the original AST.
@@ -209,9 +228,10 @@ func (ar *AnalysisResult) refactorToSubtests() ([]RefactoredFunction, RefactorGe
 	if nameField == "map key" {
 		// Special case where map key is used -- name is the loop key
 
-		// If the key is ignored, use a default name instead of the detected loop key
+		// If the key is ignored, replace the key with a default name so the data can be used
 		if loopKeyName == "_" {
-			loopKeyName = "test"
+			// todo LATER - probably should make sure this name isn't already used in the function, but not a likely issue
+			loopKeyName = "testName"
 		}
 
 		scenarioNameExpr = ast.NewIdent(loopKeyName)
@@ -224,40 +244,72 @@ func (ar *AnalysisResult) refactorToSubtests() ([]RefactoredFunction, RefactorGe
 		scenarioNameExpr = asttools.NewSelectorExpr(scenarioVarName, nameField)
 	}
 
-	// Construct the actual `t.Run()` call statement
-	// todo LATER maybe detect the name of the original `testing.T` param and use it instead of hardcoding "t"
-	tRunCall := &ast.ExprStmt{
-		X: &ast.CallExpr{
-			Fun: asttools.NewSelectorExpr("t", "Run"),
-			Args: []ast.Expr{
-				// Scenario name, like `tt.Name`
-				scenarioNameExpr,
+	// Detect the name of the `*testing.T` parameter in the runner's function body, instead of hardcoding it to "t"
+	funcDecl, _ := asttools.GetEnclosingFunction(ss.Runner.Pos(), tc.GetPackageFiles())
+	if funcDecl == nil || funcDecl.Type == nil {
+		return nil, RefactorGenerationStatusError, fmt.Errorf("cannot refactor test case with missing function declaration")
+	}
+	// Look for either `*testing.T` or `*require.TestingT`
+	tVarName, err := asttools.GetParamNameByType(funcDecl, &ast.StarExpr{X: asttools.NewSelectorExpr("testing", "T")}, &ast.StarExpr{X: asttools.NewSelectorExpr("require", "TestingT")})
+	if err != nil {
+		slog.Warn("Cannot refactor test case because a `*testing.T` parameter was not detected", "function", funcDecl.Name.Name, "test", tc)
+		return nil, RefactorGenerationStatusNoTester, nil
+	}
 
-				// Function literal for the test body, of form `func(t *testing.T) { ... }`
-				&ast.FuncLit{
-					Type: &ast.FuncType{
-						// The `*testing.T` parameter
-						Params: &ast.FieldList{
-							List: []*ast.Field{
-								{
-									Names: []*ast.Ident{
-										ast.NewIdent("t"),
-									},
-									Type: &ast.StarExpr{
-										X: asttools.NewSelectorExpr("testing", "T"),
-									},
+	// ENHANCEMENT
+	// To hopefully avoid compilation errors, try to replace `continue` runnerStatements in the loop body with `return` to make the test pass.
+	runnerStatements := ss.GetRunnerStatements()
+	for _, stmt := range runnerStatements {
+		// Detect continue statements without a label, except when inside another loop
+		astutil.Apply(stmt, func(c *astutil.Cursor) bool {
+			n := c.Node()
+			switch x := n.(type) {
+			case *ast.RangeStmt, *ast.ForStmt:
+				// Don't inspect internal loops because they're a valid place for more continue statements
+				return false
+			case *ast.BranchStmt:
+				// Only replace continue statements without a label
+				// todo LATER - can't handle nested loop that continue the main runner because we don't know if the runner is labeled
+				if x.Tok == token.CONTINUE && x.Label == nil {
+					// c.Replace(asttools.NewCallExprStmt(asttools.NewSelectorExpr(tVarName, "Skip"), nil))
+					c.Replace(&ast.ReturnStmt{})
+				}
+			}
+			return true
+		}, nil)
+	}
+
+	// Construct the actual `t.Run()` call statement using all the data we have so far
+	tRunCall := asttools.NewCallExprStmt(
+		asttools.NewSelectorExpr(tVarName, "Run"),
+		[]ast.Expr{
+			// Scenario name, like `tt.Name`
+			scenarioNameExpr,
+
+			// Function literal for the test body, of form `func(t *testing.T) { ... }`
+			&ast.FuncLit{
+				Type: &ast.FuncType{
+					// The `*testing.T` parameter
+					Params: &ast.FieldList{
+						List: []*ast.Field{
+							{
+								Names: []*ast.Ident{
+									ast.NewIdent(tVarName),
+								},
+								Type: &ast.StarExpr{
+									X: asttools.NewSelectorExpr("testing", "T"),
 								},
 							},
 						},
 					},
-					// The function body, populated with the original loop body statements
-					Body: &ast.BlockStmt{
-						List: ss.GetRunnerStatements(),
-					},
+				},
+				// The function body, populated with the original loop body statements
+				Body: &ast.BlockStmt{
+					List: runnerStatements,
 				},
 			},
 		},
-	} // end of constructing `t.Run()` call
+	) // end of constructing `t.Run()` call
 
 	// Apply the refactoring changes to the underlying AST now that the refactoring logic is complete
 	switch loop := ss.Runner.(type) {

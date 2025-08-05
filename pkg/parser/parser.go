@@ -129,7 +129,7 @@ func Parse(t Task, rootDir string, splitByDir bool, threads int) error {
 
 // Iterates over all Go source files in the specified directory and runs the provided task on each file.
 // After processing all files, calls the task's ReportResults method to output any accumulated results.
-// todo make this multithreaded even without `splitByDir` somehow?
+// todo MAYBE make this multithreaded even without `splitByDir` somehow
 func parseDir(ctx context.Context, task Task, dir string) error {
 	// Check for cancellation before starting
 	select {
@@ -165,9 +165,10 @@ func parseDir(ctx context.Context, task Task, dir string) error {
 		return nil // No packages to process, so just return
 	}
 
-	// todo note: don't forget to walk the import graph to analyze imported functions -- maybe cache these to avoid re-analyzing them?
-	// could probably use the `packages.Visit` function's pre- and post-visit hooks to modify a map
-	// maybe should do the entire iterating like this, where all results of flattening non-test functions are stored in a map?
+	// todo note: consider walking the import graph to analyze imported functions -- maybe cache these to avoid re-analyzing them?
+	//    could probably use the `packages.Visit` function's pre- and post-visit hooks to modify a map
+	//    maybe should do the entire iterating like this, where all results of flattening non-test functions are stored in a map?
+	//    Currently functions are only expanded within the same package, but this might be useful for cross-package expansion
 
 	// ========== Iterate over all top-level packages ==========
 	for _, pkg := range pkgs {

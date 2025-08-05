@@ -35,43 +35,46 @@ outerStmtLoop:
 			continue outerStmtLoop
 		}
 
-		// Iterate over each component of the expanded statement, i.e. look into expanded helper functions
-		for stmt := range expanded.All() {
-			// Extract the loop that runs the subtests
-			if ss.Runner == nil {
-				// Detect the loop itself
-				if rangeStmt, ok := stmt.(*ast.RangeStmt); ok {
-					slog.Debug("Found range statement in test case", "testCase", tc.TestName)
+		// Extract the loop that runs the subtests, which should not be part of a helper function (to reduce falsely identified table-driven tests)
+		// todo NOTE - to allow subtest runners inside helper functions, move this block inside the loop over `expanded.All()`
+		if ss.Runner == nil {
+			stmt := expanded.Stmt
+			// Detect the loop itself
+			if rangeStmt, ok := stmt.(*ast.RangeStmt); ok {
+				slog.Debug("Found range statement in test case", "testCase", tc.TestName)
 
-					// Make sure the loop ranges over a valid data structure, and save it if so
-					ss.detectScenarioDataStructure(tc.TypeOf(rangeStmt.X))
+				// Make sure the loop ranges over a valid data structure, and save it if so
+				ss.detectScenarioDataStructure(tc.TypeOf(rangeStmt.X))
 
-					if ss.DataStructure == ScenarioNoDS {
-						// Can't do anything if the loop data structure is unknown
-						slog.Debug("Detected a range loop in test case, but the data structure is unknown", "testCase", tc)
-						continue outerStmtLoop // Try checking for additional loops
-					}
-
-					// Check if the scenario data structure is defined directly in the range statement
-					if _, ok := rangeStmt.X.(*ast.CompositeLit); ok {
-						scenariosDefinedInLoop := ss.IdentifyScenarios(rangeStmt.X, tc)
-						if scenariosDefinedInLoop {
-							slog.Debug("Found scenario definition directly in the range statement", "testCase", tc, "scenarios", len(ss.Scenarios))
-						}
-					}
-
-					ss.Runner = rangeStmt
-
-					continue outerStmtLoop // Move to the next statement
+				if ss.DataStructure == ScenarioNoDS {
+					// Can't do anything if the loop data structure is unknown
+					slog.Debug("Detected a range loop in test case, but the data structure is unknown", "testCase", tc)
+					continue outerStmtLoop // Try checking for additional loops
 				}
 
-				// todo LATER add support for `for-i` loops
-				//  else if forStmt, ok := stmt.(*ast.ForStmt); ok {
-				// 	slog.Debug("Found loop statement in test case", "test", t.Name)
-				// 	t.TableDrivenType += ", with for loop"
-				// 	detectTRun(forStmt.Body)
-				// }
+				// Check if the scenario data structure is defined directly in the range statement
+				if _, ok := rangeStmt.X.(*ast.CompositeLit); ok {
+					scenariosDefinedInLoop := ss.IdentifyScenarios(rangeStmt.X, tc)
+					if scenariosDefinedInLoop {
+						slog.Debug("Found scenario definition directly in the range statement", "testCase", tc, "scenarios", len(ss.Scenarios))
+					}
+				}
+
+				ss.Runner = rangeStmt
+
+				continue outerStmtLoop // Move to the next statement
 			}
+
+			// todo LATER add support for `for-i` loops
+			//  else if forStmt, ok := stmt.(*ast.ForStmt); ok {
+			// 	slog.Debug("Found loop statement in test case", "test", t.Name)
+			// 	t.TableDrivenType += ", with for loop"
+			// 	detectTRun(forStmt.Body)
+			// }
+		}
+
+		// Iterate over each component of the expanded statement, i.e. look into expanded helper functions
+		for stmt := range expanded.All() {
 
 			// Search for variable assignments matching the detected scenario data structure, with the goal of finding the scenario definitions
 			if ss.Scenarios == nil && ss.ScenarioTemplate != nil {
@@ -180,8 +183,8 @@ func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (ScenarioData
 
 		// todo LATER this would be the place to handle maps with non-struct values, like map[string]bool
 
-		// If the map key is a string, assume it's the scenario name
-		if asttools.IsBasicType(x.Key().Underlying(), types.IsString) {
+		// If the map key is a string (not considering underlying type), assume it's the scenario name
+		if asttools.IsBasicType(x.Key(), types.IsString) {
 			ss.NameField = "map key"
 		}
 

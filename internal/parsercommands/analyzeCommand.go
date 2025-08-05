@@ -38,7 +38,8 @@ type AnalyzeCommand struct {
 // Command-line flags for the Analyze command specifically
 type analyzeOptions struct {
 	// todo LATER/MAYBE make this a slice so multiple refactoring methods can be applied at once
-	RefactorStrategy string `long:"refactor" description:"The type of refactoring to perform on the detected test cases" choice:"none" choice:"subtest" default:"none"`
+	RefactorStrategy    string `long:"refactor" description:"The type of refactoring to perform on the detected test cases" choice:"none" choice:"subtest" default:"none"`
+	KeepRefactoredFiles bool   `long:"keep-refactored-files" description:"Whether to retain the results of refactored test cases by NOT restoring the original source files after refactoring"`
 }
 
 // Compile-time interface implementation check
@@ -124,7 +125,7 @@ func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packa
 		cmd.testCases = append(cmd.testCases, analysisResult)
 
 		// Attempt to refactor the test case if a refactoring strategy is specified
-		result := analysisResult.AttemptRefactoring(testcase.RefactorStrategyFromString(cmd.RefactorStrategy))
+		result := analysisResult.AttemptRefactoring(testcase.RefactorStrategyFromString(cmd.RefactorStrategy), cmd.KeepRefactoredFiles)
 
 		// Only count refactoring statistics if a refactoring strategy was specified
 		if result.Strategy != testcase.RefactorStrategyNone && result.GenerationStatus != testcase.RefactorGenerationStatusNone {
@@ -135,8 +136,8 @@ func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packa
 				// The refactoring generation succeeded
 				cmd.refactorGenerationSuccesses++
 
-				if result.OriginalExecutionResult == result.RefactoredExecutionResult {
-					// The refactoring generation was successful, and the execution results matched
+				if result.OriginalExecutionResult == result.RefactoredExecutionResult && result.OriginalExecutionResult == testcase.TestExecutionResultPass {
+					// The refactoring generation was successful, and the execution results are both successful too
 					cmd.refactorSuccesses++
 				}
 			}
@@ -170,7 +171,7 @@ func (cmd *AnalyzeCommand) ReportResults() error {
 			fmt.Sprintf("Refactoring strategy: %q\n", cmd.RefactorStrategy),
 			fmt.Sprintf("Refactoring attempts: %d\n", cmd.refactorAttempts),
 			fmt.Sprintf("Refactor generation successes: %d\n", cmd.refactorGenerationSuccesses),
-			fmt.Sprintf("Refactoring successes (with matching execution results): %d\n", cmd.refactorSuccesses),
+			fmt.Sprintf("Refactoring successes (with successful execution): %d\n", cmd.refactorSuccesses),
 			// todo maybe put some table-driven data here
 		)
 	}

@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/types"
 	"iter"
+	"log/slog"
 	"strings"
 
 	"github.com/maxgreen01/go-test-parser/pkg/asttools"
@@ -82,10 +83,6 @@ func (sds *ScenarioDataStructure) UnmarshalJSON(data []byte) error {
 
 // Perform additional analysis based on the core data fields, populating the corresponding fields
 func (ss *ScenarioSet) Analyze() {
-	if ss.ScenarioTemplate == nil {
-		return // Nothing to analyze
-	}
-
 	ss.NameField = ss.detectNameField()
 	ss.ExpectedFields = ss.detectExpectedFields()
 	ss.HasFunctionFields = ss.detectFunctionFields()
@@ -93,18 +90,19 @@ func (ss *ScenarioSet) Analyze() {
 
 	// todo LATER consider expanding the statements inside the runner loop, just like with TestCase statements
 	//     since TestCase already expands all statements, we can probably store a copy of the corresponding statement without recomputing
+	//     This would also probably have to be looped into the refactoring code to replace AST data with a clone
 }
 
 // Returns the name of the field representing the name of each scenario
 func (ss *ScenarioSet) detectNameField() string {
-	if ss.ScenarioTemplate == nil {
-		return "" // Nothing to analyze
-	}
-
 	// In the special case for map data structures where the key represents the scenario name,
 	// the name field would already be set by `DetectScenarioDataStructure()`
 	if ss.DataStructure == ScenarioMapDS && ss.NameField != "" {
 		return ss.NameField
+	}
+
+	if ss.ScenarioTemplate == nil {
+		return "" // Nothing to analyze
 	}
 
 	// If the scenario uses subtests, check if the first arg of `t.Run()` is a field of the scenario struct
@@ -175,9 +173,16 @@ func (ss *ScenarioSet) detectFunctionFields() bool {
 
 // Returns a bool indicating whether `t.Run()` is called inside the loop body, as well as a reference to the `t.Run()` statement
 func (ss *ScenarioSet) detectSubtest() (bool, *ast.CallExpr) {
+	// Detect the name of the `testing.T` parameter instead of hardcoding "t"
+	tVarName, err := asttools.GetParamNameByType(ss.TestCase.funcDecl, &ast.StarExpr{X: asttools.NewSelectorExpr("testing", "T")})
+	if err != nil {
+		slog.Warn("Cannot detect `*testing.T` parameter in test case", "err", err, "test", ss.TestCase)
+		return false, nil
+	}
+
 	statements := ss.GetRunnerStatements()
 	for _, stmt := range statements {
-		if ok, callExpr := asttools.IsSelectorFuncCall(stmt, "t", "Run"); ok {
+		if ok, callExpr := asttools.IsSelectorFuncCall(stmt, tVarName, "Run"); ok {
 			return true, callExpr
 		}
 	}

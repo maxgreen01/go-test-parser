@@ -14,13 +14,15 @@ An advanced research tool for identifying and analyzing unit tests in Go project
 
 ## Quick Start
 
-Download the latest binary for your operating system from the [Releases](https://github.com/maxgreen01/go-test-parser/releases) page.
+Download the latest binary for your operating system from the [Releases](https://github.com/maxgreen01/go-test-parser/releases) page. If a binary for your operating system is not available, you can build the project from its source by cloning the repository and building it yourself.
 
 To start the program, run it in the command line using the following format:
 
 ```bash
-./go-test-parser <command> [options]
+./go-test-parser-<platform> <command> [options]
 ```
+
+Throughout the rest of this documentation, the `<platform>` part of the executable name is omitted for brevity.
 
 For a list of supported commands, see the [Commands](#commands) section. For a list of available options, see the [Application Options](#application-options) section, as well as the Command Options subsection for each command.
 
@@ -80,11 +82,16 @@ The following command-line options are only supported by the `analyze` command.
 | Option                    | Description                                                                                     | Default Value | Example Argument               |
 | ------------------------- | ----------------------------------------------------------------------------------------------- | ------------- | ------------------------------ |
 | `--refactor`              | The type of refactoring to perform on the detected test cases. See below for additional details | `none`        | `none`, `subtest` (exhaustive) |
+| `--keep-refactored-files` | Whether to retain the results of refactored test cases by NOT restoring the original source files after refactoring | `false`       | N/a                            |
 
-The `refactor` command indicates which type of refactoring should be performed on certain detected test cases. After refactoring, the refactored function is saved as a field in the JSON output file for each affected test case. Note that the refactoring may modify helper functions defined in the same package, but these are not reflected in the JSON output. The allowed refactoring strategies are described as follows:
+The `refactor` option indicates which type of refactoring should be performed on certain detected test cases. After refactoring, the refactored function is saved as a field in the JSON output file for each affected test case. Note that the refactoring may modify helper functions defined in the same package, but these are not reflected in the JSON output. The allowed refactoring strategies are described as follows:
 
 - The `none` argument indicates that no refactoring will be performed.
 - The `subtest` refactoring method affects tests that are detected to be table-driven but do not use `t.Run()` to declare subtests. The refactoring wraps the entire contents of the execution loop in a `t.Run()` call, using the detected scenario name field (or a stringified version of one of the input fields) as the subtest name.
+
+The `keep-refactored-files` option allows the user to review the refactored code directly in their original files. The program's default behavior is to revert refactored code to its original state after refactoring is complete, but this option disables that behavior. If you plan to run the parser multiple times on the same project, you must restore the original files before each run to ensure accurate results! To restore the original files, you can use Git to revert the changes or back up the original files before running the parser.
+
+Note that if this option is enabled, compilation errors caused by a refactoring will likely affect the execution results (but not the actual refactorings) of other tests in the same file. Also, if multiple tests perform a refactoring on the same helper function, the final state of the code will depend solely on the last refactoring attempt that affected the helper.
 
 ## Contributing
 

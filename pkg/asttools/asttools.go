@@ -23,13 +23,13 @@ import (
 // ========== Conversion Functions ==========
 //
 
-// Define a printer config for converting AST nodes to string representations
+// Defines a printer config for converting AST nodes to string representations
 var printerCfg = &printer.Config{
 	Mode:     printer.UseSpaces | printer.TabIndent,
 	Tabwidth: 4,
 }
 
-// Convert an AST node to a string representation using `go/printer`, or return an error string if formatting fails
+// Converts an AST node to a string representation using `go/printer`, or return an error string if formatting fails
 // todo CLEANUP should return actual errors
 func NodeToString(node ast.Node, fset *token.FileSet) string {
 	if node == nil || reflect.ValueOf(node).IsNil() {
@@ -55,7 +55,7 @@ const (
 	_fakeFunc    = "func _() "
 )
 
-// Parse a string (usually from JSON) into the corresponding AST expression.
+// Parses a string (usually from JSON) into the corresponding AST expression.
 // This function tries to parse the string as a declaration, statement, or expression in that order.
 func StringToNode(str string) (ast.Node, error) {
 	// First try parsing the string as a declaration by treating the string as a Go source file
@@ -178,7 +178,7 @@ func ReplaceFuncDecl(old, new *ast.FuncDecl, file *ast.File) error {
 	return fmt.Errorf("could not find function declaration %q in package %s", old.Name.Name, file.Name.Name)
 }
 
-// Return the index of the given statement within a function body, or an error if the statement is not found.
+// Returns the index of the given statement within a function body, or an error if the statement is not found.
 // The contents of the statement (but not necessarily its underlying pointers) must exactly match a statement in the provided body.
 func FindStmtInBody(stmt ast.Stmt, body []ast.Stmt) (int, error) {
 	if stmt == nil {
@@ -193,7 +193,7 @@ func FindStmtInBody(stmt ast.Stmt, body []ast.Stmt) (int, error) {
 	return -1, fmt.Errorf("could not find stmt in function body")
 }
 
-// Return the i-th statement in the new body, where i is  the index of the provided statement within its own parent body.
+// Returns the i-th statement in the new body, where i is  the index of the provided statement within its own parent body.
 // For example, if the given statement is at index 2 in its parent body, this returns the statement at index 2 in the new body.
 func GetStmtWithSameIndex(stmt ast.Stmt, parentBody, newBody []ast.Stmt) (ast.Stmt, error) {
 	index, err := FindStmtInBody(stmt, parentBody)
@@ -204,6 +204,35 @@ func GetStmtWithSameIndex(stmt ast.Stmt, parentBody, newBody []ast.Stmt) (ast.St
 		return nil, fmt.Errorf("statement index %d out of bounds for new body containing %d statements", index, len(newBody))
 	}
 	return newBody[index], nil
+}
+
+// Returns the name of the first detected parameter in the function declaration that exactly matches any of the
+// provided parameter types. If no matching parameter is found, returns an error.
+func GetParamNameByType(funcDecl *ast.FuncDecl, paramTypes ...ast.Expr) (string, error) {
+	if funcDecl == nil || funcDecl.Type == nil {
+		return "", fmt.Errorf("cannot detect parameter name for uninitialized function declaration")
+	}
+	if len(paramTypes) == 0 {
+		return "", fmt.Errorf("cannot detect parameter name without parameter types")
+	}
+	// Iterate the function parameters by type
+	for _, param := range funcDecl.Type.Params.List {
+		if param.Type == nil {
+			continue
+		}
+		// Check for any of the provided parameter types
+		for _, paramType := range paramTypes {
+			if !astequal.Expr(param.Type, paramType) {
+				continue
+			}
+			if len(param.Names) == 0 {
+				slog.Debug("Found parameter with matching type, but it has no name")
+				continue
+			}
+			return param.Names[0].Name, nil
+		}
+	}
+	return "", fmt.Errorf("could not find parameter name with types %+#v in function %q", paramTypes, funcDecl.Name.Name)
 }
 
 //
@@ -218,11 +247,21 @@ func NewSelectorExpr(owner, name string) ast.Expr {
 	}
 }
 
+// Creates a call expression statement using the provided function and arguments.
+func NewCallExprStmt(fun ast.Expr, args []ast.Expr) *ast.ExprStmt {
+	return &ast.ExprStmt{
+		X: &ast.CallExpr{
+			Fun:  fun,
+			Args: args,
+		},
+	}
+}
+
 //
 // ========== Output Functions ==========
 //
 
-// Save the contents of the specified AST file to the disk using the specified path, after
+// Saves the contents of the specified AST file to the disk using the specified path, after
 // formatting the AST data with `go/format` using the provided FileSet. Any existing file
 // at the specified path will be overwritten.
 func SaveFileContents(path string, newFile *ast.File, fset *token.FileSet) error {
@@ -254,13 +293,13 @@ func SaveFileContents(path string, newFile *ast.File, fset *token.FileSet) error
 // Returns whether a Type is Basic and has the specified info.
 // See `go/types.Basic` for more details.
 func IsBasicType(typ types.Type, info types.BasicInfo) bool {
-	if basic, ok := typ.Underlying().(*types.Basic); ok {
+	if basic, ok := typ.(*types.Basic); ok {
 		return basic.Info() == info
 	}
 	return false
 }
 
-// Returns T given *T or an alias thereof.
+// Returns T given *T or an alias of *T.
 // For all other types it is the identity function.
 // [copied from `go/typesinternal` package]
 func Unpointer(t types.Type) types.Type {
