@@ -19,7 +19,7 @@ type ScenarioSet struct {
 
 	// Core data fields
 	// todo LATER expand to support scenario definitions like `map[string]bool` without a struct template (probably by making changes to `DetectScenarioDataStructure`)
-	ScenarioTemplate *types.Struct // the definition of the `struct` type that individual scenarios are based on
+	ScenarioType types.Type // the definition of the `struct` type that individual scenarios are based on
 
 	DataStructure ScenarioDataStructure // describes the type of data structure used to store scenarios
 	Scenarios     []ast.Expr            // the individual scenarios themselves //todo LATER convert to type `[]Scenario`
@@ -101,8 +101,8 @@ func (ss *ScenarioSet) detectNameField() string {
 		return ss.NameField
 	}
 
-	if ss.ScenarioTemplate == nil {
-		return "" // Nothing to analyze
+	if _, ok := ss.ScenarioType.(*types.Struct); !ok {
+		return "" // No fields to analyze
 	}
 
 	// If the scenario uses subtests, check if the first arg of `t.Run()` is a field of the scenario struct
@@ -142,8 +142,8 @@ func (ss *ScenarioSet) detectNameField() string {
 // Returns the names of the fields representing the expected results of each scenario
 // todo LATER try expanding this to detect fields that are used in assertions or comparisons
 func (ss *ScenarioSet) detectExpectedFields() []string {
-	if ss.ScenarioTemplate == nil {
-		return nil // Nothing to analyze
+	if _, ok := ss.ScenarioType.(*types.Struct); !ok {
+		return nil // No fields to analyze
 	}
 
 	// Save the names of fields containing the string "expect", "want", or "result"
@@ -159,8 +159,8 @@ func (ss *ScenarioSet) detectExpectedFields() []string {
 
 // Returns a bool indicating whether the scenario type has any fields whose type is a function
 func (ss *ScenarioSet) detectFunctionFields() bool {
-	if ss.ScenarioTemplate == nil {
-		return false // Nothing to analyze
+	if _, ok := ss.ScenarioType.(*types.Struct); !ok {
+		return false // No fields to analyze
 	}
 
 	for field := range ss.GetFields() {
@@ -195,14 +195,15 @@ func (ss *ScenarioSet) detectSubtest() (bool, *ast.CallExpr) {
 // =============== Result Getters ===============
 //
 
-// Returns the fields of the scenario struct definition
-// todo note that defining fields like `a, b int` counts as one `Field` element with multiple Names -- need to account for this
+// Returns the fields of the struct type used to define scenarios, if possible.
+// Note that fields defined like `a, b int` are treated as one `Field` element with multiple Names.
 func (ss *ScenarioSet) GetFields() iter.Seq[*types.Var] {
-	if ss.ScenarioTemplate == nil {
-		// Return empty iterator to avoid a panic when trying to range over nil
+	structTemplate, ok := ss.ScenarioType.(*types.Struct)
+	if !ok {
+		// No fields to analyze, so return empty iterator (which avoids a panic by trying to range over nil)
 		return iter.Seq[*types.Var](func(yield func(*types.Var) bool) {})
 	}
-	return ss.ScenarioTemplate.Fields()
+	return structTemplate.Fields()
 }
 
 // Returns the statements that make up the loop body
@@ -230,8 +231,14 @@ func (ss *ScenarioSet) IsTableDriven() bool {
 	if ss == nil {
 		return false
 	}
-	// FIXME NOTE: the two commented conditions counting subtests excludes structures like `map[string]bool`
-	return ss.DataStructure != ScenarioNoDS /* && ss.ScenarioTemplate != nil && len(ss.Scenarios) > 0 */
+
+	// HEURISTIC: if a map doesn't have a string key or an explicit "name" field, it's probably not a table-driven test
+	// FIXME
+	// if !asttools.IsBasicType(x.Key(), types.IsString) && ss.NameField == "" {
+	// 	ss.DataStructure, ss.ScenarioType = ScenarioNoDS, nil
+	// }
+
+	return ss.DataStructure != ScenarioNoDS && ss.ScenarioType != nil && len(ss.Scenarios) > 0
 }
 
 //
@@ -243,7 +250,7 @@ func (ss *ScenarioSet) IsTableDriven() bool {
 type scenarioSetJSON struct {
 	// Parent TestCase is deliberately not included
 
-	ScenarioTemplate string `json:"scenarioTemplate"`
+	ScenarioType string `json:"scenarioType"`
 
 	DataStructure ScenarioDataStructure `json:"dataStructure"`
 	Scenarios     []string              `json:"scenarios"`
@@ -254,6 +261,7 @@ type scenarioSetJSON struct {
 	ExpectedFields    []string `json:"expectedFields"`
 	HasFunctionFields bool     `json:"hasFunctionFields"`
 	UsesSubtest       bool     `json:"usesSubtest"`
+	IsTableDriven     bool     `json:"isTableDriven"` // isn't an actual field on the original struct
 }
 
 // Marshal the ScenarioSet for JSON output
@@ -263,9 +271,9 @@ func (ss *ScenarioSet) MarshalJSON() ([]byte, error) {
 		return json.Marshal(scenarioSetJSON{})
 	}
 
-	var scenarioTemplateStr string
-	if ss.ScenarioTemplate != nil {
-		scenarioTemplateStr = ss.ScenarioTemplate.String()
+	var scenarioTypeStr string
+	if ss.ScenarioType != nil {
+		scenarioTypeStr = ss.ScenarioType.String()
 	}
 
 	// Marshal individual Scenario data
@@ -277,7 +285,7 @@ func (ss *ScenarioSet) MarshalJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(scenarioSetJSON{
-		ScenarioTemplate: scenarioTemplateStr,
+		ScenarioType: scenarioTypeStr,
 
 		DataStructure: ss.DataStructure,
 		Scenarios:     scenarioStrs,
@@ -288,6 +296,7 @@ func (ss *ScenarioSet) MarshalJSON() ([]byte, error) {
 		ExpectedFields:    ss.ExpectedFields,
 		HasFunctionFields: ss.HasFunctionFields,
 		UsesSubtest:       ss.UsesSubtest,
+		IsTableDriven:     ss.IsTableDriven(),
 	})
 }
 

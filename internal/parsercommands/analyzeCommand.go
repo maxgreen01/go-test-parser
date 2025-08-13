@@ -30,6 +30,7 @@ type AnalyzeCommand struct {
 	// Data fields
 	testCases []*testcase.AnalysisResult // list of analysis results and related metadata for detected test functions
 
+	tableDrivenTests            int // number of tests that are table-driven
 	refactorAttempts            int // total number of test cases that were attempted to be refactored
 	refactorGenerationSuccesses int // number of test cases that were successfully refactored in some way
 	refactorSuccesses           int // number of test cases whose execution results matched before and after refactoring
@@ -124,6 +125,10 @@ func (cmd *AnalyzeCommand) Visit(file *ast.File, fset *token.FileSet, pkg *packa
 		analysisResult := testcase.Analyze(&tc)
 		cmd.testCases = append(cmd.testCases, analysisResult)
 
+		if analysisResult.IsTableDriven() {
+			cmd.tableDrivenTests++
+		}
+
 		// Attempt to refactor the test case if a refactoring strategy is specified
 		result := analysisResult.AttemptRefactoring(testcase.RefactorStrategyFromString(cmd.RefactorStrategy), cmd.KeepRefactoredFiles)
 
@@ -168,12 +173,18 @@ func (cmd *AnalyzeCommand) ReportResults() error {
 		reportLines = append(reportLines,
 			fmt.Sprintf("Number of test cases: %d\n", numTests),
 			"\n",
+			fmt.Sprintf("Table-driven tests: %d\n", cmd.tableDrivenTests),
+			"\n",
 			fmt.Sprintf("Refactoring strategy: %q\n", cmd.RefactorStrategy),
-			fmt.Sprintf("Refactoring attempts: %d\n", cmd.refactorAttempts),
-			fmt.Sprintf("Refactor generation successes: %d\n", cmd.refactorGenerationSuccesses),
-			fmt.Sprintf("Refactoring successes (with successful execution): %d\n", cmd.refactorSuccesses),
-			// todo maybe put some table-driven data here
 		)
+
+		if cmd.RefactorStrategy != "none" { // todo CLEANUP don't hardcode this
+			reportLines = append(reportLines,
+				fmt.Sprintf("Refactoring attempts: %d\n", cmd.refactorAttempts),
+				fmt.Sprintf("Refactor generation successes: %d\n", cmd.refactorGenerationSuccesses),
+				fmt.Sprintf("Refactoring successes (with successful execution): %d\n", cmd.refactorSuccesses),
+			)
+		}
 	}
 
 	// Print the report to the terminal

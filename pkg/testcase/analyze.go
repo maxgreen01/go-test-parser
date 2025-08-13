@@ -77,7 +77,7 @@ outerStmtLoop:
 		for stmt := range expanded.All() {
 
 			// Search for variable assignments matching the detected scenario data structure, with the goal of finding the scenario definitions
-			if ss.Scenarios == nil && ss.ScenarioTemplate != nil {
+			if ss.Scenarios == nil && ss.ScenarioType != nil {
 				switch assignment := stmt.(type) {
 				case *ast.AssignStmt:
 					// Statements like `scenarios := []Scenario{...}`
@@ -111,7 +111,7 @@ outerStmtLoop:
 	} // end of loop over expanded statements
 
 	// If the loop was found but the Scenario definitions were not, check the file declarations in case they were defined outside the function
-	if ss.Scenarios == nil && ss.ScenarioTemplate != nil {
+	if ss.Scenarios == nil && ss.ScenarioType != nil {
 		slog.Debug("No scenarios found in the test case, checking file declarations", "testCase", tc)
 
 		if tc.GetFile() == nil {
@@ -146,57 +146,53 @@ outerStmtLoop:
 }
 
 // Detects the type of data structure used to store scenarios in a table-driven test as well as
-// the underlying struct type used to define scenarios, then saves both to the `ScenarioSet`.
+// the underlying type (usually a struct) used to define scenarios, then saves both to the `ScenarioSet`.
 // Also checks if the key of a map structure is used to define scenario names.
 //
-// Returns the ScenarioDataStructure type and the underlying struct type used to define scenarios,
-// which are already saved to the `ScenarioSet`.
-func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (ScenarioDataStructure, *types.Struct) {
+// Returns the ScenarioDataStructure value for this type and the underlying type used to define scenarios,
+// which are both already saved to the `ScenarioSet`.
+func (ss *ScenarioSet) detectScenarioDataStructure(typ types.Type) (ScenarioDataStructure, types.Type) {
 	if typ == nil {
-		ss.DataStructure, ss.ScenarioTemplate = ScenarioNoDS, nil
-		return ss.DataStructure, ss.ScenarioTemplate
+		ss.DataStructure, ss.ScenarioType = ScenarioNoDS, nil
+		return ss.DataStructure, ss.ScenarioType
 	}
 
 	// Check the underlying type
-	// todo CLEANUP maybe refactor for less duplication
 	switch x := typ.Underlying().(type) {
 
 	case *types.Slice:
 		// Check for []struct
 		if structType, ok := asttools.Unpointer(x.Elem()).Underlying().(*types.Struct); ok {
-			ss.DataStructure, ss.ScenarioTemplate = ScenarioStructListDS, structType
-			return ss.DataStructure, ss.ScenarioTemplate
+			ss.DataStructure, ss.ScenarioType = ScenarioStructListDS, structType
+			return ss.DataStructure, ss.ScenarioType
 		}
 	case *types.Array:
 		// Check for [N]struct
 		if structType, ok := asttools.Unpointer(x.Elem()).Underlying().(*types.Struct); ok {
-			ss.DataStructure, ss.ScenarioTemplate = ScenarioStructListDS, structType
-			return ss.DataStructure, ss.ScenarioTemplate
+			ss.DataStructure, ss.ScenarioType = ScenarioStructListDS, structType
+			return ss.DataStructure, ss.ScenarioType
 		}
 
 	case *types.Map:
-		// Check for map[any]struct
+		// Check for map[any]any
+		// map[any]struct is expected most of the time, but something like map[string]bool is fine too
 		ss.DataStructure = ScenarioMapDS
-		if structType, ok := asttools.Unpointer(x.Elem()).Underlying().(*types.Struct); ok {
-			ss.ScenarioTemplate = structType
-		}
-
-		// todo LATER this would be the place to handle maps with non-struct values, like map[string]bool
+		ss.ScenarioType = asttools.Unpointer(x.Elem()).Underlying()
 
 		// If the map key is a string (not considering underlying type), assume it's the scenario name
 		if asttools.IsBasicType(x.Key(), types.IsString) {
 			ss.NameField = "map key"
 		}
 
-		return ss.DataStructure, ss.ScenarioTemplate
+		return ss.DataStructure, ss.ScenarioType
 	}
 
 	// Default or unknown case if other logic doesn't match
-	ss.DataStructure, ss.ScenarioTemplate = ScenarioNoDS, nil
-	return ss.DataStructure, ss.ScenarioTemplate
+	ss.DataStructure, ss.ScenarioType = ScenarioNoDS, nil
+	return ss.DataStructure, ss.ScenarioType
 }
 
-// Checks whether an expression has the same underlying type as the ScenarioTemplate, and if so, saves the scenarios from the expression.
+// Checks whether an expression has the same underlying type as the ScenarioType, and if so, saves the scenarios from the expression.
 // Returns whether the scenarios were saved successfully. Always returns `false` if the `ScenarioSet.DataStructure` is unknown.
 // See https://go.dev/ref/spec#Type_identity for details of the `types.Identical` comparison method.
 func (ss *ScenarioSet) IdentifyScenarios(expr ast.Expr, tc *TestCase) bool {
@@ -218,7 +214,7 @@ func (ss *ScenarioSet) IdentifyScenarios(expr ast.Expr, tc *TestCase) bool {
 		case ScenarioStructListDS:
 			// Scenarios are directly stored as the elements of the slice
 			typ := tc.TypeOf(compositeLit.Elts[0])
-			if typ != nil && types.Identical(typ.Underlying(), ss.ScenarioTemplate) {
+			if typ != nil && types.Identical(typ.Underlying(), ss.ScenarioType) {
 				ss.Scenarios = compositeLit.Elts
 				return true
 			}
@@ -226,7 +222,7 @@ func (ss *ScenarioSet) IdentifyScenarios(expr ast.Expr, tc *TestCase) bool {
 		case ScenarioMapDS:
 			// Scenarios are stored as the values of the `KeyValueExpr` elements
 			kvExpr, ok := compositeLit.Elts[0].(*ast.KeyValueExpr)
-			if ok && types.Identical(tc.TypeOf(kvExpr.Value).Underlying(), ss.ScenarioTemplate) {
+			if ok && types.Identical(tc.TypeOf(kvExpr.Value).Underlying(), ss.ScenarioType) {
 				for _, elt := range compositeLit.Elts {
 					if kvExpr, ok := elt.(*ast.KeyValueExpr); ok {
 						ss.Scenarios = append(ss.Scenarios, kvExpr)
